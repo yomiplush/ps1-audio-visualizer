@@ -2,10 +2,54 @@
 
 from __future__ import annotations
 
+import os
 import sys
 import time
+from pathlib import Path
 
-import glfw
+# Help PyInstaller onefile find glfw3.dll before importing glfw
+def _bootstrap_native_libs() -> None:
+    candidates: list[Path] = []
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        root = Path(meipass)
+        candidates.append(root)
+        candidates.extend(root.rglob("glfw3.dll"))
+    # Dev install: site-packages/glfw/
+    try:
+        import importlib.util
+
+        spec = importlib.util.find_spec("glfw")
+        if spec and spec.origin:
+            candidates.append(Path(spec.origin).parent)
+    except Exception:
+        pass
+    for c in candidates:
+        d = c if c.is_dir() else c.parent
+        if not d.is_dir():
+            continue
+        if hasattr(os, "add_dll_directory"):
+            try:
+                os.add_dll_directory(str(d))
+            except OSError:
+                pass
+        os.environ["PATH"] = str(d) + os.pathsep + os.environ.get("PATH", "")
+
+
+_bootstrap_native_libs()
+
+try:
+    import glfw
+except ImportError as exc:
+    print(
+        "Failed to import glfw / load glfw3.dll.\n"
+        "This build may be missing the native GLFW library.\n"
+        f"Detail: {exc}\n"
+        "Reinstall from the latest GitHub Release or run: pip install glfw",
+        file=sys.stderr,
+    )
+    raise
+
 from OpenGL.GL import glGetString, GL_VERSION, GL_RENDERER
 
 from sound_orbit_win import __app_name__, __version__

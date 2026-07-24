@@ -43,6 +43,8 @@ py -3 -m venv .venv-win
 - Windows 10/11 x64
 - GPU with **OpenGL 3.3** (NVIDIA / AMD / Intel drivers)
 - No Python install needed for the `.exe` (bundled by PyInstaller)
+- **glfw3.dll** is bundled inside the exe (PyInstaller). If you see  
+  `Failed to load GLFW3 shared library`, download a newer Release build.
 
 ## Smart App Control / SmartScreen blocks the .exe?
 
