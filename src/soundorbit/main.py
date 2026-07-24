@@ -13,15 +13,20 @@ _SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-import gi
+# CRITICAL: apply GDK_BACKEND / GL vendor BEFORE importing Gdk
+from soundorbit.glsetup import apply_runtime_gl_env, detect_gpu  # noqa: E402
+
+_gpu_early = detect_gpu()
+apply_runtime_gl_env(_gpu_early)
+
+import gi  # noqa: E402
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from soundorbit import __app_id__, __version__
-from soundorbit.glsetup import apply_runtime_gl_env, detect_gpu
-from soundorbit.window import SoundOrbitWindow
+from soundorbit import __app_id__, __version__  # noqa: E402
+from soundorbit.window import SoundOrbitWindow  # noqa: E402
 
 
 class SoundOrbitApp(Adw.Application):
@@ -31,7 +36,9 @@ class SoundOrbitApp(Adw.Application):
             flags=Gio.ApplicationFlags.FLAGS_NONE,
         )
         self._window: SoundOrbitWindow | None = None
-        self._gpu = detect_gpu()
+        self._gpu = _gpu_early
+        mode = os.environ.get("SOUNDORBIT_GL_MODE", "default")
+        print(f"SoundOrbit GL mode: {mode} | {self._gpu.label}", file=sys.stderr)
 
     def do_activate(self) -> None:
         if not self._window:
@@ -40,7 +47,6 @@ class SoundOrbitApp(Adw.Application):
 
     def do_startup(self) -> None:
         Adw.Application.do_startup(self)
-        apply_runtime_gl_env(self._gpu)
 
         # Warm up display GL early (better errors than a blank GLArea)
         display = Gdk.Display.get_default()
@@ -48,7 +54,6 @@ class SoundOrbitApp(Adw.Application):
             try:
                 display.prepare_gl()
             except GLib.Error as exc:
-                # Not fatal yet — GLArea may still work on another backend
                 print(f"warning: display.prepare_gl failed: {exc}", file=sys.stderr)
             except Exception as exc:  # noqa: BLE001
                 print(f"warning: prepare_gl: {exc}", file=sys.stderr)

@@ -323,42 +323,91 @@ PY
 }
 
 pick_gl_mode() {
-  # Prints env assignments for best working mode, one line: e.g. "GDK_BACKEND=x11"
-  # Or empty for default.
-  local forced="${SOUNDORBIT_GL:-auto}"
+  # Prints env KEY=VAL… including SOUNDORBIT_GL_MODE=…
+  local forced="${SOUNDORBIT_GL_MODE:-${SOUNDORBIT_GL:-auto}}"
   case "$forced" in
-    x11) echo "GDK_BACKEND=x11"; return ;;
-    wayland) echo "GDK_BACKEND=wayland"; return ;;
-    software) echo "LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe"; return ;;
+    x11|x11-clean)
+      echo "SOUNDORBIT_GL_MODE=x11-clean GDK_BACKEND=x11"
+      return
+      ;;
+    nvidia-x11|nvidia)
+      echo "SOUNDORBIT_GL_MODE=nvidia-x11 GDK_BACKEND=x11 __GLX_VENDOR_LIBRARY_NAME=nvidia"
+      return
+      ;;
+    wayland)
+      echo "SOUNDORBIT_GL_MODE=wayland GDK_BACKEND=wayland"
+      return
+      ;;
+    software|llvmpipe)
+      echo "SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11"
+      return
+      ;;
   esac
 
   local candidates=()
-  # NVIDIA + Wayland: prefer X11 first
-  if [[ "$GPU_PRIMARY" == "NVIDIA" && "${XDG_SESSION_TYPE:-}" == "wayland" ]]; then
-    candidates+=("GDK_BACKEND=x11" "" "LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe")
+  if [[ "$GPU_PRIMARY" == "NVIDIA" ]]; then
+    # Order matters — no manual fish/bash needed; we pick a working set
+    candidates+=(
+      "SOUNDORBIT_GL_MODE=nvidia-x11 GDK_BACKEND=x11 __GLX_VENDOR_LIBRARY_NAME=nvidia"
+      "SOUNDORBIT_GL_MODE=x11-clean GDK_BACKEND=x11"
+      "SOUNDORBIT_GL_MODE=nvidia-egl __GLX_VENDOR_LIBRARY_NAME=nvidia"
+      "SOUNDORBIT_GL_MODE=default"
+      "SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11"
+    )
   else
-    candidates+=("" "GDK_BACKEND=x11" "LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe")
+    candidates+=(
+      "SOUNDORBIT_GL_MODE=default"
+      "SOUNDORBIT_GL_MODE=x11-clean GDK_BACKEND=x11"
+      "SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11"
+    )
+  fi
+
+  # Honor previously successful mode first
+  if [[ -f "$DATA_DIR/gl_mode.ok" ]]; then
+    local saved
+    saved="$(tr -d '[:space:]' <"$DATA_DIR/gl_mode.ok" || true)"
+    if [[ -n "$saved" ]]; then
+      candidates=()
+      case "$saved" in
+        nvidia-x11)
+          candidates+=("SOUNDORBIT_GL_MODE=nvidia-x11 GDK_BACKEND=x11 __GLX_VENDOR_LIBRARY_NAME=nvidia")
+          ;;
+        x11-clean|x11)
+          candidates+=("SOUNDORBIT_GL_MODE=x11-clean GDK_BACKEND=x11")
+          ;;
+        software)
+          candidates+=("SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11")
+          ;;
+        *)
+          candidates+=("SOUNDORBIT_GL_MODE=$saved")
+          ;;
+      esac
+      # still append fallbacks
+      if [[ "$GPU_PRIMARY" == "NVIDIA" ]]; then
+        candidates+=(
+          "SOUNDORBIT_GL_MODE=x11-clean GDK_BACKEND=x11"
+          "SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11"
+        )
+      else
+        candidates+=(
+          "SOUNDORBIT_GL_MODE=x11-clean GDK_BACKEND=x11"
+          "SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11"
+        )
+      fi
+    fi
   fi
 
   local mode
   for mode in "${candidates[@]}"; do
-    log "GL probe: ${mode:-default}"
+    log "GL probe: $mode"
     # shellcheck disable=SC2086
-    if [[ -z "$mode" ]]; then
-      if probe_gl; then
-        echo ""
-        return
-      fi
-    else
-      if probe_gl $mode; then
-        echo "$mode"
-        return
-      fi
+    if probe_gl $mode; then
+      echo "$mode"
+      return
     fi
   done
-  # last resort software even if probe failed
   log "GL probe all failed → software fallback"
-  echo "LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe"
+  echo "SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11"
 }
 
 # --------------- main ---------------

@@ -13,7 +13,14 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from soundorbit import __app_id__, __app_name__, __version__
 from soundorbit.audio import SystemAudioCapture
-from soundorbit.glsetup import GpuInfo, detect_gpu, gl_failure_hints
+from soundorbit.glsetup import (
+    GpuInfo,
+    detect_gpu,
+    detect_shell,
+    gl_failure_hints,
+    mark_gl_success,
+    try_gl_autofix,
+)
 from soundorbit.quality import detect_quality
 from soundorbit.renderer import VisualizerRenderer
 from soundorbit.resources import ResourceGuardian
@@ -184,32 +191,53 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
             self._show_hint(temporary=False)
 
     def _show_gl_failure(self, message: str) -> None:
-        hints = gl_failure_hints(self._gpu)
-        short = f"OpenGL 初期化失敗: {message}"
-        self._status.set_text(short)
+        # 1) 自動で別 GL モードに切り替えて再起動（Fish/Bash 不要）
+        self._status.set_text(f"OpenGL 初期化失敗… 自動修正中 ({message[:40]})")
         self._hint.set_opacity(1.0)
         self._hint.set_visible(True)
-        # Also print full recovery guide to terminal / journal
-        print(hints, file=__import__("sys").stderr)
-        print(f"detail: {message}", file=__import__("sys").stderr)
-        # Non-blocking dialog when possible
-        try:
-            dlg = Adw.AlertDialog(
-                heading="OpenGL コンテキストを作成できません",
-                body=(
-                    f"{message}\n\n"
-                    f"{self._gpu.label}\n"
-                    f"{self._gpu.detail[:160]}\n\n"
-                    "ターミナルに詳細な直し方を出しました。\n"
-                    "例: GDK_BACKEND=x11 ./SoundOrbit-*.AppImage\n"
-                    "    LIBGL_ALWAYS_SOFTWARE=1 ./SoundOrbit-*.AppImage"
-                ),
-            )
-            dlg.add_response("ok", "OK")
-            dlg.set_default_response("ok")
-            dlg.present(self)
-        except Exception:
-            pass
+        print(f"GL failure: {message}", file=__import__("sys").stderr)
+        print("==> trying automatic GL backend switch…", file=__import__("sys").stderr)
+
+        def _autofix() -> bool:
+            try:
+                if try_gl_autofix(self._gpu):
+                    return GLib.SOURCE_REMOVE  # re-execed
+            except Exception as exc:  # noqa: BLE001
+                print(f"autofix error: {exc}", file=__import__("sys").stderr)
+            # 2) 全モード尽きた → シェル別ヒント
+            hints = gl_failure_hints(self._gpu)
+            print(hints, file=__import__("sys").stderr)
+            shell = detect_shell()
+            if shell == "fish":
+                example = (
+                    "set -x GDK_BACKEND x11; ./SoundOrbit-*.AppImage\n"
+                    "set -x LIBGL_ALWAYS_SOFTWARE 1; ./SoundOrbit-*.AppImage"
+                )
+            else:
+                example = (
+                    "GDK_BACKEND=x11 ./SoundOrbit-*.AppImage\n"
+                    "LIBGL_ALWAYS_SOFTWARE=1 ./SoundOrbit-*.AppImage"
+                )
+            self._status.set_text(f"OpenGL 初期化失敗: {message}")
+            try:
+                dlg = Adw.AlertDialog(
+                    heading="OpenGL を自動修正できませんでした",
+                    body=(
+                        f"{message}\n\n"
+                        f"{self._gpu.label}\n"
+                        f"{self._gpu.detail[:160]}\n\n"
+                        f"検出シェル: {shell}\n"
+                        f"手動の例:\n{example}"
+                    ),
+                )
+                dlg.add_response("ok", "OK")
+                dlg.set_default_response("ok")
+                dlg.present(self)
+            except Exception:
+                pass
+            return GLib.SOURCE_REMOVE
+
+        GLib.timeout_add(200, _autofix)
 
     def _on_gl_realize(self, area: Gtk.GLArea) -> None:
         try:
@@ -224,6 +252,7 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         try:
             self._renderer.init_gl()
             self._gl_ready = True
+            mark_gl_success()
         except Exception as exc:
             self._show_gl_failure(str(exc))
             return
