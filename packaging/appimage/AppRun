@@ -50,16 +50,19 @@ fi
 log "GPU detect: ${GPU_ALL} (primary=${GPU_PRIMARY})"
 
 # --- packages ---
+# NOTE: Do NOT list pipewire/pipewire-pulse if already installed (CachyOS
+# rebuilds like 1.6.8-1.1 get "downgraded" by Arch repos and break deps).
 pkgs_base_arch=(
   gtk4 libadwaita
   python python-gobject python-cairo python-numpy python-opengl python-pip
-  pipewire pipewire-pulse
   mesa libepoxy libglvnd
   gobject-introspection
 )
-pkgs_amd_arch=(mesa mesa-utils vulkan-radeon libva-mesa-driver mesa-vdpau)
-pkgs_nvidia_arch=(nvidia-utils egl-wayland libglvnd libvdpau libepoxy)
-pkgs_intel_arch=(mesa mesa-utils vulkan-intel intel-media-driver libva)
+# Audio tools only if missing (see filter_missing_arch_pkgs)
+pkgs_audio_arch=(pipewire-pulse)
+pkgs_amd_arch=(mesa-utils vulkan-radeon libva-mesa-driver mesa-vdpau)
+pkgs_nvidia_arch=(nvidia-utils egl-wayland libvdpau)
+pkgs_intel_arch=(mesa-utils vulkan-intel intel-media-driver libva)
 
 pkgs_base_deb=(
   python3 python3-gi python3-gi-cairo python3-numpy python3-opengl python3-pip python3-venv
@@ -75,7 +78,25 @@ collect_arch_pkgs() {
   echo " $GPU_ALL " | grep -q ' AMD ' && p+=("${pkgs_amd_arch[@]}")
   echo " $GPU_ALL " | grep -q ' NVIDIA ' && p+=("${pkgs_nvidia_arch[@]}")
   echo " $GPU_ALL " | grep -q ' INTEL ' && p+=("${pkgs_intel_arch[@]}")
+  # pipewire-pulse only when completely missing (never reinstall/downgrade)
+  if ! pacman -Q pipewire-pulse >/dev/null 2>&1 && ! command -v parec >/dev/null 2>&1; then
+    p+=("${pkgs_audio_arch[@]}")
+  fi
   printf '%s\n' "${p[@]}" | awk '!a[$0]++'
+}
+
+# Only packages that are not installed at all (avoids CachyOS downgrades)
+filter_missing_arch_pkgs() {
+  local p out=()
+  for p in "$@"; do
+    if pacman -Q "$p" >/dev/null 2>&1; then
+      continue
+    fi
+    out+=("$p")
+  done
+  if [[ ${#out[@]} -gt 0 ]]; then
+    printf '%s\n' "${out[@]}"
+  fi
 }
 
 collect_deb_pkgs() {
@@ -124,10 +145,19 @@ install_host_deps() {
   fi
 
   if command -v pacman >/dev/null 2>&1; then
-    mapfile -t pkgs < <(collect_arch_pkgs)
-    log "pacman install for GPU [$GPU_ALL]:"
+    mapfile -t allp < <(collect_arch_pkgs)
+    mapfile -t pkgs < <(filter_missing_arch_pkgs "${allp[@]}")
+    if [[ ${#pkgs[@]} -eq 0 ]]; then
+      log "pacman: all required packages already installed (no downgrade)"
+      return 0
+    fi
+    log "pacman install ONLY missing packages for GPU [$GPU_ALL]:"
     printf '  %s\n' "${pkgs[@]}" >&2
-    run_privileged pacman -S --needed --noconfirm "${pkgs[@]}" || return 1
+    # --needed still helps; we already filtered installed names
+    run_privileged pacman -S --needed --noconfirm "${pkgs[@]}" || {
+      log "warning: pacman install failed (continuing with what is already installed)"
+      return 0
+    }
     return 0
   fi
   if command -v apt-get >/dev/null 2>&1; then
@@ -277,18 +307,27 @@ apply_gpu_env() {
   esac
 }
 
+# Soft software-GL env that works on NVIDIA hosts (must force mesa, not nvidia GLX)
+software_gl_env() {
+  echo "SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe __GLX_VENDOR_LIBRARY_NAME=mesa MESA_LOADER_DRIVER_OVERRIDE=llvmpipe GDK_BACKEND=wayland"
+}
+
 # Quick GL probe (creates tiny GLArea, exits 0 if context works)
 probe_gl() {
   # Usage: probe_gl KEY=VAL KEY=VAL ...
   export PYTHONNOUSERSITE=1
-  env "$@" "$VENV_DIR/bin/python" - <<'PY' >/dev/null 2>&1
+  local logf="${DATA_DIR}/gl_probe.log"
+  mkdir -p "$DATA_DIR"
+  # shellcheck disable=SC2086
+  if env "$@" "$VENV_DIR/bin/python" - <<'PY' >"$logf" 2>&1
 import os, sys
+# Env must already be set by `env KEY=VAL` before this process starts
 import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Gtk, Adw, GLib
 
-ok = {"v": False}
+ok = {"v": False, "err": ""}
 
 app = Adw.Application(application_id="io.github.yomiplush.SoundOrbit.glprobe")
 
@@ -306,25 +345,41 @@ def activate(a):
         try:
             area.make_current()
             err = area.get_error()
-            ok["v"] = err is None
-        except Exception:
+            if err is None:
+                ok["v"] = True
+            else:
+                ok["err"] = err.message
+        except Exception as e:
+            ok["err"] = str(e)
             ok["v"] = False
         a.quit()
     gl.connect("realize", on_realize)
     w.set_default_size(64, 64)
     w.set_child(gl)
     w.present()
+    # force map
+    GLib.timeout_add(50, lambda: (gl.queue_render(), False)[1])
 
 app.connect("activate", activate)
-GLib.timeout_add(2000, app.quit)
-app.run([])
+GLib.timeout_add(2500, app.quit)
+code = app.run([])
+if ok["err"]:
+    print("probe err:", ok["err"], file=sys.stderr)
+print("probe ok=", ok["v"], "GDK_BACKEND=", os.environ.get("GDK_BACKEND"), file=sys.stderr)
 sys.exit(0 if ok["v"] else 1)
 PY
+  then
+    return 0
+  fi
+  log "  probe failed (see $logf)"
+  return 1
 }
 
 pick_gl_mode() {
   # Prints env KEY=VAL… including SOUNDORBIT_GL_MODE=…
   local forced="${SOUNDORBIT_GL_MODE:-${SOUNDORBIT_GL:-auto}}"
+  local soft
+  soft="$(software_gl_env)"
   case "$forced" in
     x11|x11-clean)
       echo "SOUNDORBIT_GL_MODE=x11-clean GDK_BACKEND=x11"
@@ -339,61 +394,54 @@ pick_gl_mode() {
       return
       ;;
     software|llvmpipe)
-      echo "SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11"
+      echo "$soft"
       return
       ;;
   esac
 
   local candidates=()
   if [[ "$GPU_PRIMARY" == "NVIDIA" ]]; then
-    # Order matters — no manual fish/bash needed; we pick a working set
+    # Prefer native Wayland+NVIDIA first (CachyOS GNOME often has no/broken X11 path for GL)
+    # Then X11, then mesa software (must set __GLX_VENDOR_LIBRARY_NAME=mesa)
     candidates+=(
+      "SOUNDORBIT_GL_MODE=nvidia-wayland GDK_BACKEND=wayland __GLX_VENDOR_LIBRARY_NAME=nvidia"
+      "SOUNDORBIT_GL_MODE=default"
       "SOUNDORBIT_GL_MODE=nvidia-x11 GDK_BACKEND=x11 __GLX_VENDOR_LIBRARY_NAME=nvidia"
       "SOUNDORBIT_GL_MODE=x11-clean GDK_BACKEND=x11"
-      "SOUNDORBIT_GL_MODE=nvidia-egl __GLX_VENDOR_LIBRARY_NAME=nvidia"
-      "SOUNDORBIT_GL_MODE=default"
-      "SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11"
+      "SOUNDORBIT_GL_MODE=mesa-wayland GDK_BACKEND=wayland __GLX_VENDOR_LIBRARY_NAME=mesa"
+      "$soft"
     )
   else
     candidates+=(
       "SOUNDORBIT_GL_MODE=default"
       "SOUNDORBIT_GL_MODE=x11-clean GDK_BACKEND=x11"
-      "SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11"
+      "$soft"
     )
   fi
 
   # Honor previously successful mode first
   if [[ -f "$DATA_DIR/gl_mode.ok" ]]; then
-    local saved
+    local saved pre=()
     saved="$(tr -d '[:space:]' <"$DATA_DIR/gl_mode.ok" || true)"
     if [[ -n "$saved" ]]; then
-      candidates=()
       case "$saved" in
         nvidia-x11)
-          candidates+=("SOUNDORBIT_GL_MODE=nvidia-x11 GDK_BACKEND=x11 __GLX_VENDOR_LIBRARY_NAME=nvidia")
+          pre+=("SOUNDORBIT_GL_MODE=nvidia-x11 GDK_BACKEND=x11 __GLX_VENDOR_LIBRARY_NAME=nvidia")
+          ;;
+        nvidia-wayland)
+          pre+=("SOUNDORBIT_GL_MODE=nvidia-wayland GDK_BACKEND=wayland __GLX_VENDOR_LIBRARY_NAME=nvidia")
           ;;
         x11-clean|x11)
-          candidates+=("SOUNDORBIT_GL_MODE=x11-clean GDK_BACKEND=x11")
+          pre+=("SOUNDORBIT_GL_MODE=x11-clean GDK_BACKEND=x11")
           ;;
         software)
-          candidates+=("SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11")
+          pre+=("$soft")
           ;;
         *)
-          candidates+=("SOUNDORBIT_GL_MODE=$saved")
+          pre+=("SOUNDORBIT_GL_MODE=$saved")
           ;;
       esac
-      # still append fallbacks
-      if [[ "$GPU_PRIMARY" == "NVIDIA" ]]; then
-        candidates+=(
-          "SOUNDORBIT_GL_MODE=x11-clean GDK_BACKEND=x11"
-          "SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11"
-        )
-      else
-        candidates+=(
-          "SOUNDORBIT_GL_MODE=x11-clean GDK_BACKEND=x11"
-          "SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11"
-        )
-      fi
+      candidates=("${pre[@]}" "${candidates[@]}")
     fi
   fi
 
@@ -406,8 +454,8 @@ pick_gl_mode() {
       return
     fi
   done
-  log "GL probe all failed → software fallback"
-  echo "SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11"
+  log "GL probe all failed → software+mesa fallback"
+  echo "$soft"
 }
 
 # --------------- main ---------------

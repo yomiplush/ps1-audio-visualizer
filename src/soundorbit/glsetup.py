@@ -138,19 +138,13 @@ def gl_mode_sequence(gpu: Optional[GpuInfo] = None) -> list[str]:
     gpu = gpu or detect_gpu()
     session = (os.environ.get("XDG_SESSION_TYPE") or "").lower()
     if gpu.primary == "NVIDIA":
-        if session == "wayland":
-            return [
-                "nvidia-x11",   # proprietary + X11 (most common fix)
-                "x11-clean",    # X11 without forcing vendor
-                "nvidia-egl",   # nvidia vendor, leave display
-                "default",
-                "software",
-            ]
+        # CachyOS GNOME is usually Wayland; X11-only paths often all fail.
         return [
+            "nvidia-wayland",
+            "default",
             "nvidia-x11",
             "x11-clean",
-            "nvidia-egl",
-            "default",
+            "mesa-wayland",
             "software",
         ]
     if gpu.primary in ("AMD", "INTEL"):
@@ -179,23 +173,25 @@ def apply_gl_mode(mode: str) -> None:
     if mode == "nvidia-x11":
         os.environ["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
         os.environ["__GL_THREADED_OPTIMIZATIONS"] = "1"
+    elif mode == "nvidia-wayland":
+        os.environ["GDK_BACKEND"] = "wayland"
+        os.environ["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
+        os.environ["__GL_THREADED_OPTIMIZATIONS"] = "1"
     elif mode == "nvidia-egl":
         os.environ["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
         os.environ["__GL_THREADED_OPTIMIZATIONS"] = "1"
-        # Prefer explicit EGL vendor file if present
-        for candidate in (
-            "/usr/share/glvnd/egl_vendor.d/10_nvidia.json",
-            "/usr/share/glvnd/egl_vendor.d/50_mesa.json",
-        ):
-            if os.path.isfile(candidate) and "nvidia" in candidate:
-                os.environ["__EGL_VENDOR_LIBRARY_FILENAMES"] = candidate
-                break
+    elif mode == "mesa-wayland":
+        os.environ["GDK_BACKEND"] = "wayland"
+        os.environ["__GLX_VENDOR_LIBRARY_NAME"] = "mesa"
     elif mode == "wayland":
         os.environ["GDK_BACKEND"] = "wayland"
     elif mode in ("software", "llvmpipe"):
+        # On NVIDIA hosts, software GL only works if GLVND picks mesa
         os.environ["LIBGL_ALWAYS_SOFTWARE"] = "1"
         os.environ["GALLIUM_DRIVER"] = "llvmpipe"
-        os.environ["GDK_BACKEND"] = os.environ.get("GDK_BACKEND") or "x11"
+        os.environ["MESA_LOADER_DRIVER_OVERRIDE"] = "llvmpipe"
+        os.environ["__GLX_VENDOR_LIBRARY_NAME"] = "mesa"
+        os.environ["GDK_BACKEND"] = os.environ.get("GDK_BACKEND") or "wayland"
     elif mode == "default":
         pass
 
@@ -229,14 +225,16 @@ def apply_runtime_gl_env(gpu: Optional[GpuInfo] = None) -> None:
         except OSError:
             pass
 
-    # Soft defaults only — no forced __GLX_VENDOR_LIBRARY_NAME
+    # Soft defaults — prefer Wayland on GNOME (CachyOS); do not force X11
     if gpu.primary == "NVIDIA":
         os.environ.setdefault("__GL_THREADED_OPTIMIZATIONS", "1")
-        session = (os.environ.get("XDG_SESSION_TYPE") or "").lower()
-        if session == "wayland" and not os.environ.get("GDK_BACKEND"):
-            # Most reliable first guess for NVIDIA+Wayland
-            os.environ["GDK_BACKEND"] = "x11"
-            os.environ["SOUNDORBIT_GL_MODE"] = "x11-clean"
+        if not os.environ.get("GDK_BACKEND"):
+            session = (os.environ.get("XDG_SESSION_TYPE") or "").lower()
+            if session == "wayland":
+                os.environ["GDK_BACKEND"] = "wayland"
+                os.environ["SOUNDORBIT_GL_MODE"] = "nvidia-wayland"
+                if os.path.exists("/dev/nvidia0"):
+                    os.environ.setdefault("__GLX_VENDOR_LIBRARY_NAME", "nvidia")
 
 
 def mark_gl_success() -> None:
@@ -304,15 +302,24 @@ def reexec_with_gl_mode(mode: str) -> None:
     if m == "nvidia-x11":
         env["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
         env["__GL_THREADED_OPTIMIZATIONS"] = "1"
+    elif m == "nvidia-wayland":
+        env["GDK_BACKEND"] = "wayland"
+        env["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
+        env["__GL_THREADED_OPTIMIZATIONS"] = "1"
     elif m == "nvidia-egl":
         env["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
         env["__GL_THREADED_OPTIMIZATIONS"] = "1"
+    elif m == "mesa-wayland":
+        env["GDK_BACKEND"] = "wayland"
+        env["__GLX_VENDOR_LIBRARY_NAME"] = "mesa"
     elif m == "wayland":
         env["GDK_BACKEND"] = "wayland"
     elif m in ("software", "llvmpipe"):
         env["LIBGL_ALWAYS_SOFTWARE"] = "1"
         env["GALLIUM_DRIVER"] = "llvmpipe"
-        env["GDK_BACKEND"] = env.get("GDK_BACKEND") or "x11"
+        env["MESA_LOADER_DRIVER_OVERRIDE"] = "llvmpipe"
+        env["__GLX_VENDOR_LIBRARY_NAME"] = "mesa"
+        env["GDK_BACKEND"] = env.get("GDK_BACKEND") or "wayland"
 
     print(f"==> SoundOrbit auto-fix: re-launch mode={mode}", file=sys.stderr)
 
@@ -369,7 +376,7 @@ def clipboard_fix_commands(gpu: Optional[GpuInfo] = None, *, soft: bool = False)
     run = _sh_quote(_app_launch_path())
     lines: list[str] = []
 
-    # packages first (one line)
+    # packages: only suggest if missing (never force pipewire reinstall on CachyOS)
     if command_exists_pacman():
         pkgs = [
             "gtk4",
@@ -379,7 +386,6 @@ def clipboard_fix_commands(gpu: Optional[GpuInfo] = None, *, soft: bool = False)
             "mesa",
             "libepoxy",
             "libglvnd",
-            "pipewire-pulse",
         ]
         if "NVIDIA" in gpu.vendors:
             pkgs += ["nvidia-utils", "egl-wayland"]
@@ -387,27 +393,43 @@ def clipboard_fix_commands(gpu: Optional[GpuInfo] = None, *, soft: bool = False)
             pkgs += ["vulkan-radeon", "mesa-utils"]
         if "INTEL" in gpu.vendors:
             pkgs += ["vulkan-intel", "intel-media-driver"]
-        # unique preserve order
-        upkgs: list[str] = []
+        missing: list[str] = []
         for p in pkgs:
-            if p not in upkgs:
-                upkgs.append(p)
-        lines.append("sudo pacman -S --needed " + " ".join(upkgs))
+            if p in missing:
+                continue
+            try:
+                subprocess.check_call(
+                    ["pacman", "-Q", p],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+                missing.append(p)
+        if missing:
+            lines.append("sudo pacman -S --needed " + " ".join(missing))
 
     if shell == "fish":
         if soft:
-            lines.append(f"set -x LIBGL_ALWAYS_SOFTWARE 1; set -x GALLIUM_DRIVER llvmpipe; set -x GDK_BACKEND x11; {run}")
+            lines.append(
+                f"set -x LIBGL_ALWAYS_SOFTWARE 1; set -x GALLIUM_DRIVER llvmpipe; "
+                f"set -x __GLX_VENDOR_LIBRARY_NAME mesa; set -x GDK_BACKEND wayland; {run}"
+            )
         elif "NVIDIA" in gpu.vendors:
-            lines.append(f"set -x GDK_BACKEND x11; set -x __GLX_VENDOR_LIBRARY_NAME nvidia; {run}")
+            lines.append(
+                f"set -x GDK_BACKEND wayland; set -x __GLX_VENDOR_LIBRARY_NAME nvidia; {run}"
+            )
         else:
-            lines.append(f"set -x GDK_BACKEND x11; {run}")
+            lines.append(f"set -x GDK_BACKEND wayland; {run}")
     else:
         if soft:
-            lines.append(f"LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11 {run}")
+            lines.append(
+                f"LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe "
+                f"__GLX_VENDOR_LIBRARY_NAME=mesa GDK_BACKEND=wayland {run}"
+            )
         elif "NVIDIA" in gpu.vendors:
-            lines.append(f"GDK_BACKEND=x11 __GLX_VENDOR_LIBRARY_NAME=nvidia {run}")
+            lines.append(f"GDK_BACKEND=wayland __GLX_VENDOR_LIBRARY_NAME=nvidia {run}")
         else:
-            lines.append(f"GDK_BACKEND=x11 {run}")
+            lines.append(f"GDK_BACKEND=wayland {run}")
 
     return "\n".join(lines) + "\n"
 
