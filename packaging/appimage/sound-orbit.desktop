@@ -13,4 +13,4 @@ Terminal=false
 Categories=AudioVideo;Audio;
 Keywords=visualizer;audio;sound;music;3D;AppImage;
 StartupNotify=true
-X-AppImage-Version=1.3.0
+X-AppImage-Version=1.4.0
