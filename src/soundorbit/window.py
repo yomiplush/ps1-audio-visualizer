@@ -54,10 +54,17 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         self._gl = Gtk.GLArea()
         self._gl.set_hexpand(True)
         self._gl.set_vexpand(True)
+        # Shaders are #version 330 — ask for 3.3 (create-context will step down if needed)
         self._gl.set_required_version(3, 3)
         self._gl.set_has_depth_buffer(True)
-        # CRT 外周ベゼルをデスクトップへ透過させる
-        if hasattr(self._gl, "set_has_alpha"):
+        # NVIDIA + Wayland: RGBA/alpha visuals often fail with "Unable to create a GL context".
+        # Only enable alpha when explicitly requested or non-NVIDIA.
+        want_alpha = os.environ.get("SOUNDORBIT_ALPHA", "").strip() in ("1", "true", "yes")
+        if not want_alpha and self._gpu.primary == "NVIDIA":
+            want_alpha = False
+        elif not want_alpha and self._gpu.primary != "NVIDIA":
+            want_alpha = True
+        if want_alpha and hasattr(self._gl, "set_has_alpha"):
             try:
                 self._gl.set_has_alpha(True)
             except Exception:
@@ -75,10 +82,11 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
                 pass
         if hasattr(self._gl, "set_use_es"):
             try:
-                # Prefer core GL 3.3; ES path is last resort via allowed_apis
                 self._gl.set_use_es(False)
             except Exception:
                 pass
+        # Custom context: version / API fallbacks (critical on some NVIDIA drivers)
+        self._gl.connect("create-context", self._on_create_context)
         self._gl.connect("realize", self._on_gl_realize)
         self._gl.connect("unrealize", self._on_gl_unrealize)
         self._gl.connect("render", self._on_gl_render)
@@ -291,6 +299,56 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
 
         GLib.timeout_add(200, _autofix)
 
+    def _on_create_context(self, area: Gtk.GLArea):
+        """
+        Build a Gdk.GLContext with progressive fallbacks.
+        Returning None lets GTK use its default path.
+        """
+        try:
+            native = area.get_native()
+            if native is None:
+                return None
+            surface = native.get_surface()
+            if surface is None or not hasattr(surface, "create_gl_context"):
+                return None
+
+            versions = ((3, 3), (3, 2), (3, 1), (3, 0))
+            last_err: Optional[BaseException] = None
+            for major, minor in versions:
+                try:
+                    ctx = surface.create_gl_context()
+                    if ctx is None:
+                        continue
+                    if hasattr(ctx, "set_required_version"):
+                        ctx.set_required_version(major, minor)
+                    if hasattr(ctx, "set_debug_enabled"):
+                        ctx.set_debug_enabled(False)
+                    if hasattr(ctx, "set_allowed_apis") and hasattr(Gdk, "GLAPI"):
+                        try:
+                            apis = Gdk.GLAPI.GL
+                            if hasattr(Gdk.GLAPI, "GLES"):
+                                apis = apis | Gdk.GLAPI.GLES
+                            ctx.set_allowed_apis(apis)
+                        except Exception:
+                            pass
+                    ctx.realize()
+                    print(
+                        f"GL context OK: {major}.{minor} mode={os.environ.get('SOUNDORBIT_GL_MODE', '?')}",
+                        file=__import__("sys").stderr,
+                    )
+                    return ctx
+                except GLib.Error as exc:
+                    last_err = exc
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    last_err = exc
+                    continue
+            if last_err is not None:
+                print(f"create-context fallbacks failed: {last_err}", file=__import__("sys").stderr)
+        except Exception as exc:  # noqa: BLE001
+            print(f"create-context error: {exc}", file=__import__("sys").stderr)
+        return None
+
     def _on_gl_realize(self, area: Gtk.GLArea) -> None:
         try:
             area.make_current()
@@ -305,6 +363,8 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
             self._renderer.init_gl()
             self._gl_ready = True
             mark_gl_success()
+            mode = os.environ.get("SOUNDORBIT_GL_MODE", "default")
+            print(f"GL realize success mode={mode}", file=__import__("sys").stderr)
         except Exception as exc:
             self._show_gl_failure(str(exc))
             return

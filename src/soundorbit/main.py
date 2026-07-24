@@ -48,15 +48,9 @@ class SoundOrbitApp(Adw.Application):
     def do_startup(self) -> None:
         Adw.Application.do_startup(self)
 
-        # Warm up display GL early (better errors than a blank GLArea)
-        display = Gdk.Display.get_default()
-        if display is not None and hasattr(display, "prepare_gl"):
-            try:
-                display.prepare_gl()
-            except GLib.Error as exc:
-                print(f"warning: display.prepare_gl failed: {exc}", file=sys.stderr)
-            except Exception as exc:  # noqa: BLE001
-                print(f"warning: prepare_gl: {exc}", file=sys.stderr)
+        # NOTE: do NOT call display.prepare_gl() here.
+        # On NVIDIA + Wayland it often fails and can leave GDK in a bad state
+        # before GLArea ever runs. GLArea creates its own context on realize.
 
         # ダーク基調（ビジュアライザー向け）
         style = self.get_style_manager()

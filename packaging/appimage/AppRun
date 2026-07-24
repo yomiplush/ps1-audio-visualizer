@@ -307,9 +307,29 @@ apply_gpu_env() {
   esac
 }
 
-# Soft software-GL env that works on NVIDIA hosts (must force mesa, not nvidia GLX)
+# Soft software-GL env that works on NVIDIA hosts (must force mesa, not nvidia GLX/EGL)
 software_gl_env() {
-  echo "SOUNDORBIT_GL_MODE=software LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe __GLX_VENDOR_LIBRARY_NAME=mesa MESA_LOADER_DRIVER_OVERRIDE=llvmpipe GDK_BACKEND=wayland"
+  local mesa_egl=""
+  for f in /usr/share/glvnd/egl_vendor.d/*mesa*.json /usr/share/glvnd/egl_vendor.d/*Mesa*.json; do
+    [[ -f "$f" ]] && mesa_egl="$f" && break
+  done
+  if [[ -n "$mesa_egl" ]]; then
+    echo "SOUNDORBIT_GL_MODE=software SOUNDORBIT_ALPHA=0 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe __GLX_VENDOR_LIBRARY_NAME=mesa MESA_LOADER_DRIVER_OVERRIDE=llvmpipe __EGL_VENDOR_LIBRARY_FILENAMES=$mesa_egl GDK_BACKEND=wayland"
+  else
+    echo "SOUNDORBIT_GL_MODE=software SOUNDORBIT_ALPHA=0 LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe __GLX_VENDOR_LIBRARY_NAME=mesa MESA_LOADER_DRIVER_OVERRIDE=llvmpipe GDK_BACKEND=wayland"
+  fi
+}
+
+nvidia_wayland_env() {
+  local nv_egl=""
+  for f in /usr/share/glvnd/egl_vendor.d/*nvidia*.json /usr/share/glvnd/egl_vendor.d/*NVIDIA*.json; do
+    [[ -f "$f" ]] && nv_egl="$f" && break
+  done
+  if [[ -n "$nv_egl" ]]; then
+    echo "SOUNDORBIT_GL_MODE=nvidia-wayland SOUNDORBIT_ALPHA=0 GDK_BACKEND=wayland __GLX_VENDOR_LIBRARY_NAME=nvidia __GL_THREADED_OPTIMIZATIONS=1 __EGL_VENDOR_LIBRARY_FILENAMES=$nv_egl"
+  else
+    echo "SOUNDORBIT_GL_MODE=nvidia-wayland SOUNDORBIT_ALPHA=0 GDK_BACKEND=wayland __GLX_VENDOR_LIBRARY_NAME=nvidia __GL_THREADED_OPTIMIZATIONS=1"
+  fi
 }
 
 # Quick GL probe (creates tiny GLArea, exits 0 if context works)
@@ -400,15 +420,18 @@ pick_gl_mode() {
   esac
 
   local candidates=()
+  local nv_wl
+  nv_wl="$(nvidia_wayland_env)"
   if [[ "$GPU_PRIMARY" == "NVIDIA" ]]; then
-    # Prefer native Wayland+NVIDIA first (CachyOS GNOME often has no/broken X11 path for GL)
-    # Then X11, then mesa software (must set __GLX_VENDOR_LIBRARY_NAME=mesa)
+    # Prefer native Wayland+NVIDIA first; probe is advisory — if all fail, still launch nv-wayland
     candidates+=(
-      "SOUNDORBIT_GL_MODE=nvidia-wayland GDK_BACKEND=wayland __GLX_VENDOR_LIBRARY_NAME=nvidia"
-      "SOUNDORBIT_GL_MODE=default"
-      "SOUNDORBIT_GL_MODE=nvidia-x11 GDK_BACKEND=x11 __GLX_VENDOR_LIBRARY_NAME=nvidia"
-      "SOUNDORBIT_GL_MODE=x11-clean GDK_BACKEND=x11"
-      "SOUNDORBIT_GL_MODE=mesa-wayland GDK_BACKEND=wayland __GLX_VENDOR_LIBRARY_NAME=mesa"
+      "$nv_wl"
+      "SOUNDORBIT_GL_MODE=nvidia-egl SOUNDORBIT_ALPHA=0 __GLX_VENDOR_LIBRARY_NAME=nvidia __GL_THREADED_OPTIMIZATIONS=1"
+      "SOUNDORBIT_GL_MODE=nvidia-prime SOUNDORBIT_ALPHA=0 __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia GDK_BACKEND=wayland"
+      "SOUNDORBIT_GL_MODE=default SOUNDORBIT_ALPHA=0"
+      "SOUNDORBIT_GL_MODE=nvidia-x11 SOUNDORBIT_ALPHA=0 GDK_BACKEND=x11 __GLX_VENDOR_LIBRARY_NAME=nvidia"
+      "SOUNDORBIT_GL_MODE=x11-clean SOUNDORBIT_ALPHA=0 GDK_BACKEND=x11"
+      "SOUNDORBIT_GL_MODE=mesa-wayland SOUNDORBIT_ALPHA=0 GDK_BACKEND=wayland __GLX_VENDOR_LIBRARY_NAME=mesa"
       "$soft"
     )
   else
@@ -454,8 +477,14 @@ pick_gl_mode() {
       return
     fi
   done
-  log "GL probe all failed → software+mesa fallback"
-  echo "$soft"
+  # IMPORTANT: probes can false-fail under AppImage; do not strand NVIDIA on software only
+  if [[ "$GPU_PRIMARY" == "NVIDIA" ]]; then
+    log "GL probe all failed → launch nvidia-wayland anyway (in-app autofix will cycle)"
+    echo "$nv_wl"
+  else
+    log "GL probe all failed → software+mesa fallback"
+    echo "$soft"
+  fi
 }
 
 # --------------- main ---------------
