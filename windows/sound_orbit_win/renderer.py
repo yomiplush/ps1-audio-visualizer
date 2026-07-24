@@ -49,6 +49,7 @@ from OpenGL.GL import (
     GL_TEXTURE_WRAP_T,
     GL_TRIANGLE_STRIP,
     GL_TRIANGLES,
+    GL_TRUE,
     GL_UNSIGNED_BYTE,
     GL_VERTEX_SHADER,
     glActiveTexture,
