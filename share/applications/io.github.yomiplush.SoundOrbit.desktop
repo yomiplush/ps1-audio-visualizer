@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=サウンドオービット
+Name[en]=SoundOrbit
+GenericName=3D Sound Visualizer
+GenericName[ja]=3Dサウンドビジュアライザー
+Comment=Fullscreen 3D visualizer that reacts to system audio
+Comment[ja]=PCで再生中の音に反応する全画面3Dサウンドビジュアライザー
+Exec=sound-orbit
+Icon=io.github.yomiplush.SoundOrbit
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=visualizer;audio;sound;music;3D;spectrum;pipewire;pulse;ビジュアライザー;音;音楽;
+StartupNotify=true
+DBusActivatable=false
+StartupWMClass=io.github.yomiplush.SoundOrbit

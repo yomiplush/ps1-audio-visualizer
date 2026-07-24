@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1040"/>
+      <stop offset="100%" style="stop-color:#0a1628"/>
+    </linearGradient>
+    <linearGradient id="orb" x1="30%" y1="20%" x2="70%" y2="90%">
+      <stop offset="0%" style="stop-color:#6ecbff"/>
+      <stop offset="55%" style="stop-color:#c44dff"/>
+      <stop offset="100%" style="stop-color:#ff9a3c"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" style="stop-color:#88ccff;stop-opacity:0.55"/>
+      <stop offset="100%" style="stop-color:#88ccff;stop-opacity:0"/>
+    </radialGradient>
+  </defs>
+  <!-- rounded app background -->
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="url(#bg)"/>
+  <circle cx="64" cy="64" r="52" fill="url(#glow)"/>
+  <!-- orbit rings -->
+  <ellipse cx="64" cy="64" rx="46" ry="18" fill="none" stroke="#5ad0ff" stroke-width="2.2" opacity="0.55" transform="rotate(-18 64 64)"/>
+  <ellipse cx="64" cy="64" rx="38" ry="14" fill="none" stroke="#d06bff" stroke-width="1.8" opacity="0.65" transform="rotate(12 64 64)"/>
+  <!-- spectrum bars -->
+  <g fill="url(#orb)" opacity="0.95">
+    <rect x="22" y="58" width="5" height="18" rx="2"/>
+    <rect x="30" y="48" width="5" height="32" rx="2"/>
+    <rect x="38" y="40" width="5" height="42" rx="2"/>
+    <rect x="85" y="44" width="5" height="36" rx="2"/>
+    <rect x="93" y="52" width="5" height="26" rx="2"/>
+    <rect x="101" y="60" width="5" height="16" rx="2"/>
+  </g>
+  <!-- center orb -->
+  <circle cx="64" cy="64" r="16" fill="url(#orb)"/>
+  <circle cx="58" cy="58" r="5" fill="#ffffff" opacity="0.45"/>
+</svg>
