@@ -1,4 +1,6 @@
 # SoundOrbit
+Windows Version has under developed situation...hold on beer for this.
+
 
 Fullscreen **3D system-audio visualizer** — PS1-style chunky pixels, CRT look, 256-color post, system audio via PipeWire.
 
