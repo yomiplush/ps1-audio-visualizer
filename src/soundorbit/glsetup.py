@@ -341,63 +341,102 @@ def try_gl_autofix(gpu: Optional[GpuInfo] = None) -> bool:
     return True  # unreachable if exec works
 
 
+def _app_launch_path() -> str:
+    """Best path to re-run: AppImage path, else ./SoundOrbit-*.AppImage."""
+    appimage = os.environ.get("APPIMAGE") or ""
+    if appimage and os.path.isfile(appimage):
+        return appimage
+    # Menu launcher
+    local = os.path.expanduser("~/.local/bin/sound-orbit")
+    if os.path.isfile(local):
+        return local
+    return "./SoundOrbit-*.AppImage"
+
+
+def _sh_quote(path: str) -> str:
+    if not path or any(c in path for c in " \t'\"$`\\*?"):
+        return "'" + path.replace("'", "'\"'\"'") + "'"
+    return path
+
+
+def clipboard_fix_commands(gpu: Optional[GpuInfo] = None, *, soft: bool = False) -> str:
+    """
+    Single paste-ready block for the user's shell (fish or bash/zsh).
+    No comments that break paste — only executable lines.
+    """
+    gpu = gpu or detect_gpu()
+    shell = detect_shell()
+    run = _sh_quote(_app_launch_path())
+    lines: list[str] = []
+
+    # packages first (one line)
+    if command_exists_pacman():
+        pkgs = [
+            "gtk4",
+            "libadwaita",
+            "python-gobject",
+            "python-opengl",
+            "mesa",
+            "libepoxy",
+            "libglvnd",
+            "pipewire-pulse",
+        ]
+        if "NVIDIA" in gpu.vendors:
+            pkgs += ["nvidia-utils", "egl-wayland"]
+        if "AMD" in gpu.vendors:
+            pkgs += ["vulkan-radeon", "mesa-utils"]
+        if "INTEL" in gpu.vendors:
+            pkgs += ["vulkan-intel", "intel-media-driver"]
+        # unique preserve order
+        upkgs: list[str] = []
+        for p in pkgs:
+            if p not in upkgs:
+                upkgs.append(p)
+        lines.append("sudo pacman -S --needed " + " ".join(upkgs))
+
+    if shell == "fish":
+        if soft:
+            lines.append(f"set -x LIBGL_ALWAYS_SOFTWARE 1; set -x GALLIUM_DRIVER llvmpipe; set -x GDK_BACKEND x11; {run}")
+        elif "NVIDIA" in gpu.vendors:
+            lines.append(f"set -x GDK_BACKEND x11; set -x __GLX_VENDOR_LIBRARY_NAME nvidia; {run}")
+        else:
+            lines.append(f"set -x GDK_BACKEND x11; {run}")
+    else:
+        if soft:
+            lines.append(f"LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe GDK_BACKEND=x11 {run}")
+        elif "NVIDIA" in gpu.vendors:
+            lines.append(f"GDK_BACKEND=x11 __GLX_VENDOR_LIBRARY_NAME=nvidia {run}")
+        else:
+            lines.append(f"GDK_BACKEND=x11 {run}")
+
+    return "\n".join(lines) + "\n"
+
+
+def command_exists_pacman() -> bool:
+    from shutil import which
+
+    return which("pacman") is not None
+
+
 def gl_failure_hints(gpu: Optional[GpuInfo] = None) -> str:
     """Shell-aware recovery tips (fish vs bash). Prefer auto-fix first."""
     gpu = gpu or detect_gpu()
     shell = detect_shell()
-    run = "./SoundOrbit-*.AppImage"
+    cmd = clipboard_fix_commands(gpu, soft=False).rstrip()
+    soft = clipboard_fix_commands(gpu, soft=True).rstrip()
 
     lines = [
         "OpenGL コンテキストを作成できませんでした。",
         f"{gpu.label}  ·  {gpu.detail[:80]}",
         f"検出シェル: {shell}",
         "",
-        "※ 通常は AppImage が自動で別モードを試します。",
-        "  まだダメなときだけ、下をそのまま貼り付けてください。",
+        "【ターミナルにコピーして貼り付け → Enter】",
         "",
-        "手動リトライ:",
+        "■ 推奨（そのまま1ブロック貼り付け）:",
+        cmd,
+        "",
+        "■ まだダメならソフトウェア描画:",
+        soft,
+        "",
     ]
-
-    if shell == "fish":
-        lines += [
-            f"  set -x GDK_BACKEND x11; {run}",
-            f"  set -x LIBGL_ALWAYS_SOFTWARE 1; set -x GALLIUM_DRIVER llvmpipe; {run}",
-            "",
-        ]
-        if "NVIDIA" in gpu.vendors:
-            lines += [
-                "  # NVIDIA",
-                f"  set -x GDK_BACKEND x11; set -x __GLX_VENDOR_LIBRARY_NAME nvidia; {run}",
-                "",
-            ]
-        pkg = "sudo pacman -S --needed"
-    else:
-        lines += [
-            f"  GDK_BACKEND=x11 {run}",
-            f"  LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe {run}",
-            "",
-        ]
-        if "NVIDIA" in gpu.vendors:
-            lines += [
-                "  # NVIDIA",
-                f"  GDK_BACKEND=x11 __GLX_VENDOR_LIBRARY_NAME=nvidia {run}",
-                "",
-            ]
-        pkg = "sudo pacman -S --needed"
-
-    if "AMD" in gpu.vendors:
-        lines += ["AMD:", f"  {pkg} mesa libepoxy libglvnd vulkan-radeon mesa-utils", ""]
-    if "NVIDIA" in gpu.vendors:
-        lines += [
-            "NVIDIA:",
-            f"  {pkg} nvidia-utils egl-wayland libglvnd libepoxy",
-            "  （カーネルの nvidia モジュールは既に入っている必要があります）",
-            "",
-        ]
-    if "INTEL" in gpu.vendors:
-        lines += [
-            "Intel:",
-            f"  {pkg} mesa libepoxy libglvnd vulkan-intel intel-media-driver",
-            "",
-        ]
     return "\n".join(lines)

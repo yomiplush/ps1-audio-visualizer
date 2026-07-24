@@ -15,6 +15,7 @@ from soundorbit import __app_id__, __app_name__, __version__
 from soundorbit.audio import SystemAudioCapture
 from soundorbit.glsetup import (
     GpuInfo,
+    clipboard_fix_commands,
     detect_gpu,
     detect_shell,
     gl_failure_hints,
@@ -190,6 +191,23 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
             # 手動表示は自動で消さない
             self._show_hint(temporary=False)
 
+    def _copy_text_to_clipboard(self, text: str) -> bool:
+        try:
+            display = self.get_display() or Gdk.Display.get_default()
+            if display is None:
+                return False
+            clipboard = display.get_clipboard()
+            clipboard.set(text)
+            return True
+        except Exception:
+            try:
+                # Fallback older API
+                clipboard = Gdk.Display.get_default().get_clipboard()  # type: ignore[union-attr]
+                clipboard.set(text)
+                return True
+            except Exception:
+                return False
+
     def _show_gl_failure(self, message: str) -> None:
         # 1) 自動で別 GL モードに切り替えて再起動（Fish/Bash 不要）
         self._status.set_text(f"OpenGL 初期化失敗… 自動修正中 ({message[:40]})")
@@ -204,37 +222,71 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
                     return GLib.SOURCE_REMOVE  # re-execed
             except Exception as exc:  # noqa: BLE001
                 print(f"autofix error: {exc}", file=__import__("sys").stderr)
-            # 2) 全モード尽きた → シェル別ヒント
+            # 2) 全モード尽きた → コピー用コマンドを提示
             hints = gl_failure_hints(self._gpu)
             print(hints, file=__import__("sys").stderr)
             shell = detect_shell()
-            if shell == "fish":
-                example = (
-                    "set -x GDK_BACKEND x11; ./SoundOrbit-*.AppImage\n"
-                    "set -x LIBGL_ALWAYS_SOFTWARE 1; ./SoundOrbit-*.AppImage"
-                )
-            else:
-                example = (
-                    "GDK_BACKEND=x11 ./SoundOrbit-*.AppImage\n"
-                    "LIBGL_ALWAYS_SOFTWARE=1 ./SoundOrbit-*.AppImage"
-                )
-            self._status.set_text(f"OpenGL 初期化失敗: {message}")
+            cmd_primary = clipboard_fix_commands(self._gpu, soft=False)
+            cmd_soft = clipboard_fix_commands(self._gpu, soft=True)
+            # 既定で推奨コマンドをクリップボードへ（貼るだけに）
+            copied = self._copy_text_to_clipboard(cmd_primary)
+            self._status.set_text(
+                "OpenGL 失敗 — コマンドをコピー済み。ターミナルに貼り付けて実行してください"
+                if copied
+                else f"OpenGL 初期化失敗: {message}"
+            )
             try:
-                dlg = Adw.AlertDialog(
-                    heading="OpenGL を自動修正できませんでした",
-                    body=(
-                        f"{message}\n\n"
-                        f"{self._gpu.label}\n"
-                        f"{self._gpu.detail[:160]}\n\n"
-                        f"検出シェル: {shell}\n"
-                        f"手動の例:\n{example}"
-                    ),
+                paste_key = "Ctrl+Shift+V" if shell != "fish" else "Ctrl+Shift+V（または右クリック→貼り付け）"
+                body = (
+                    f"{message}\n\n"
+                    f"{self._gpu.label}\n"
+                    f"{self._gpu.detail[:140]}\n\n"
+                    f"検出シェル: {shell}\n\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n"
+                    "ターミナルを開いて、コマンドを貼り付けて実行してください。\n"
+                    f"（貼り付け: {paste_key}）\n"
+                    "━━━━━━━━━━━━━━━━━━━━\n\n"
+                    + (
+                        "【すでにクリップボードにコピー済みです】\n"
+                        "そのままターミナルで貼り付け → Enter\n\n"
+                        if copied
+                        else "下のボタンでコピーしてから貼り付けてください。\n\n"
+                    )
+                    + "■ コピーされる内容（推奨）:\n"
+                    f"{cmd_primary}\n"
+                    "■ それでもダメなとき（ソフトウェア描画）:\n"
+                    f"{cmd_soft}"
                 )
-                dlg.add_response("ok", "OK")
-                dlg.set_default_response("ok")
+                dlg = Adw.AlertDialog(
+                    heading="コマンドをターミナルに貼り付けてください",
+                    body=body,
+                )
+                dlg.add_response("copy", "推奨コマンドをコピー")
+                dlg.add_response("copy_soft", "ソフト描画コマンドをコピー")
+                dlg.add_response("close", "閉じる")
+                dlg.set_default_response("copy")
+                dlg.set_close_response("close")
+
+                def _on_response(_d, response: str) -> None:
+                    if response == "copy":
+                        ok = self._copy_text_to_clipboard(cmd_primary)
+                        self._status.set_text(
+                            "✓ 推奨コマンドをコピーしました — ターミナルに貼り付けて Enter"
+                            if ok
+                            else "コピーに失敗しました（ターミナルの表示を手動コピー）"
+                        )
+                    elif response == "copy_soft":
+                        ok = self._copy_text_to_clipboard(cmd_soft)
+                        self._status.set_text(
+                            "✓ ソフト描画コマンドをコピーしました — ターミナルに貼り付けて Enter"
+                            if ok
+                            else "コピーに失敗しました"
+                        )
+
+                dlg.connect("response", _on_response)
                 dlg.present(self)
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"dialog error: {exc}", file=__import__("sys").stderr)
             return GLib.SOURCE_REMOVE
 
         GLib.timeout_add(200, _autofix)
