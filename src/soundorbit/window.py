@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from typing import Optional
 
 import gi
 
@@ -12,17 +13,19 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk
 
 from soundorbit import __app_id__, __app_name__, __version__
 from soundorbit.audio import SystemAudioCapture
+from soundorbit.glsetup import GpuInfo, detect_gpu, gl_failure_hints
 from soundorbit.quality import detect_quality
 from soundorbit.renderer import VisualizerRenderer
 from soundorbit.resources import ResourceGuardian
 
 
 class SoundOrbitWindow(Adw.ApplicationWindow):
-    def __init__(self, app: Adw.Application) -> None:
+    def __init__(self, app: Adw.Application, gpu: Optional[GpuInfo] = None) -> None:
         super().__init__(application=app, title=__app_name__)
         self.set_default_size(1280, 720)
         self.set_icon_name(__app_id__)
 
+        self._gpu = gpu or detect_gpu()
         self._quality = detect_quality()
         self._audio = SystemAudioCapture()
         self._renderer = VisualizerRenderer(quality=self._quality)
@@ -46,6 +49,21 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         self._gl.set_has_depth_buffer(True)
         self._gl.set_auto_render(False)
         self._gl.set_focusable(True)
+        # Prefer desktop GL; allow GLES as fallback when API exists (GTK 4.12+)
+        if hasattr(self._gl, "set_allowed_apis") and hasattr(Gdk, "GLAPI"):
+            try:
+                apis = Gdk.GLAPI.GL
+                if hasattr(Gdk.GLAPI, "GLES"):
+                    apis = apis | Gdk.GLAPI.GLES
+                self._gl.set_allowed_apis(apis)
+            except Exception:
+                pass
+        if hasattr(self._gl, "set_use_es"):
+            try:
+                # Prefer core GL 3.3; ES path is last resort via allowed_apis
+                self._gl.set_use_es(False)
+            except Exception:
+                pass
         self._gl.connect("realize", self._on_gl_realize)
         self._gl.connect("unrealize", self._on_gl_unrealize)
         self._gl.connect("render", self._on_gl_render)
@@ -139,17 +157,49 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         self._overlay_hide_id = 0
         return GLib.SOURCE_REMOVE
 
+    def _show_gl_failure(self, message: str) -> None:
+        hints = gl_failure_hints(self._gpu)
+        short = f"OpenGL 初期化失敗: {message}"
+        self._status.set_text(short)
+        self._hint.set_opacity(1.0)
+        self._hint.set_visible(True)
+        # Also print full recovery guide to terminal / journal
+        print(hints, file=__import__("sys").stderr)
+        print(f"detail: {message}", file=__import__("sys").stderr)
+        # Non-blocking dialog when possible
+        try:
+            dlg = Adw.AlertDialog(
+                heading="OpenGL コンテキストを作成できません",
+                body=(
+                    f"{message}\n\n"
+                    f"{self._gpu.label}\n"
+                    f"{self._gpu.detail[:160]}\n\n"
+                    "ターミナルに詳細な直し方を出しました。\n"
+                    "例: GDK_BACKEND=x11 ./SoundOrbit-*.AppImage\n"
+                    "    LIBGL_ALWAYS_SOFTWARE=1 ./SoundOrbit-*.AppImage"
+                ),
+            )
+            dlg.add_response("ok", "OK")
+            dlg.set_default_response("ok")
+            dlg.present(self)
+        except Exception:
+            pass
+
     def _on_gl_realize(self, area: Gtk.GLArea) -> None:
-        area.make_current()
+        try:
+            area.make_current()
+        except Exception as exc:
+            self._show_gl_failure(str(exc))
+            return
         err = area.get_error()
         if err:
-            self._status.set_text(f"OpenGL 初期化失敗: {err.message}")
+            self._show_gl_failure(err.message)
             return
         try:
             self._renderer.init_gl()
             self._gl_ready = True
         except Exception as exc:
-            self._status.set_text(f"GL エラー: {exc}")
+            self._show_gl_failure(str(exc))
             return
 
         self._audio.start()

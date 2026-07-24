@@ -1,37 +1,38 @@
 #!/usr/bin/env bash
-# SoundOrbit AppImage launcher.
-# Bundles the app; uses host Python + GTK/OpenGL packages (auto-installs if missing).
+# SoundOrbit smart AppImage launcher
+# - Detect AMD / NVIDIA / Intel GPUs and install matching host deps
+# - Isolated venv (system-site-packages for GTK/gi, PYTHONNOUSERSITE=1)
+# - GL env + multi-backend launch fallbacks
 set -euo pipefail
 
 HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 APP_ROOT="$HERE/usr/share/sound-orbit"
-export PATH="${HERE}/usr/bin:${PATH:-/usr/bin}"
+# shellcheck source=/dev/null
+source "$HERE/usr/share/sound-orbit-runtime/gpu-detect.sh" 2>/dev/null \
+  || source "$APP_ROOT/packaging/appimage/gpu-detect.sh" 2>/dev/null \
+  || true
 
-# Prefer host tools for audio (parec/pactl must match running PipeWire)
-# Keep bundled PATH second.
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/sound-orbit"
+VENV_DIR="${SOUNDORBIT_VENV:-$DATA_DIR/venv}"
+STAMP_FILE="$DATA_DIR/env.stamp"
+VERSION_FILE="$APP_ROOT/src/soundorbit/__init__.py"
+export PATH="${HERE}/usr/bin:/usr/bin:/bin:${PATH:-}"
 
 die() { echo "error: $*" >&2; exit 1; }
+log() { echo "==> $*" >&2; }
 
-have_python() {
-  command -v python3 >/dev/null 2>&1
-}
-
-deps_ok() {
-  have_python || return 1
-  python3 - <<'PY' 2>/dev/null
-import gi
-gi.require_version("Gtk", "4.0")
-gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw  # noqa: F401
-import numpy  # noqa: F401
-from OpenGL import GL  # noqa: F401
-PY
+app_version() {
+  if [[ -f "$VERSION_FILE" ]]; then
+    sed -n 's/^__version__ *= *"\([^"]*\)".*/\1/p' "$VERSION_FILE" | head -1
+  else
+    echo "0.0.0"
+  fi
 }
 
 show_msg() {
   local title="$1" text="$2"
   if command -v zenity >/dev/null 2>&1; then
-    zenity --info --title="$title" --width=420 --text="$text" 2>/dev/null || true
+    zenity --info --title="$title" --width=480 --text="$text" 2>/dev/null || true
   elif command -v kdialog >/dev/null 2>&1; then
     kdialog --title "$title" --msgbox "$text" 2>/dev/null || true
   else
@@ -43,7 +44,7 @@ show_msg() {
 ask_yes() {
   local title="$1" text="$2"
   if command -v zenity >/dev/null 2>&1; then
-    zenity --question --title="$title" --width=420 --text="$text" 2>/dev/null
+    zenity --question --title="$title" --width=480 --text="$text" 2>/dev/null
     return $?
   elif command -v kdialog >/dev/null 2>&1; then
     kdialog --title "$title" --yesno "$text" 2>/dev/null
@@ -55,14 +56,89 @@ ask_yes() {
   fi
 }
 
-install_deps() {
+# --- GPU ---
+if declare -F soundorbit_gpu_detect >/dev/null 2>&1; then
+  GPU_ALL="$(soundorbit_gpu_detect)"
+  GPU_PRIMARY="$(soundorbit_gpu_primary)"
+else
+  GPU_ALL="UNKNOWN"
+  GPU_PRIMARY="UNKNOWN"
+fi
+log "Detected GPU: $GPU_ALL (primary=$GPU_PRIMARY)"
+
+# --- package sets ---
+# Base UI / audio / GL plumbing (all vendors)
+pkgs_base_arch=(
+  gtk4 libadwaita
+  python python-gobject python-cairo python-numpy python-opengl python-pip
+  pipewire pipewire-pulse
+  mesa libepoxy libglvnd
+  gobject-introspection
+)
+pkgs_amd_arch=(mesa mesa-utils vulkan-radeon libva-mesa-driver mesa-vdpau)
+pkgs_nvidia_arch=(nvidia-utils egl-wayland libglvnd libvdpau libepoxy)
+# Do NOT auto-install kernel nvidia module package (must match running kernel).
+pkgs_intel_arch=(mesa mesa-utils vulkan-intel intel-media-driver libva)
+
+pkgs_base_deb=(
+  python3 python3-gi python3-gi-cairo python3-numpy python3-opengl python3-pip python3-venv
+  gir1.2-gtk-4.0 gir1.2-adw-1 libgtk-4-1 libadwaita-1-0
+  pipewire pipewire-pulse pulseaudio-utils
+  libgl1 libepoxy0 libglvnd0 mesa-utils
+)
+pkgs_amd_deb=(mesa-vulkan-drivers libgl1-mesa-dri)
+pkgs_intel_deb=(mesa-vulkan-drivers intel-media-va-driver libgl1-mesa-dri)
+
+collect_arch_pkgs() {
+  local p=("${pkgs_base_arch[@]}")
+  echo " $GPU_ALL " | grep -q ' AMD ' && p+=("${pkgs_amd_arch[@]}")
+  echo " $GPU_ALL " | grep -q ' NVIDIA ' && p+=("${pkgs_nvidia_arch[@]}")
+  echo " $GPU_ALL " | grep -q ' INTEL ' && p+=("${pkgs_intel_arch[@]}")
+  # UNKNOWN → mesa already in base
+  # unique
+  printf '%s\n' "${p[@]}" | awk '!a[$0]++'
+}
+
+collect_deb_pkgs() {
+  local p=("${pkgs_base_deb[@]}")
+  echo " $GPU_ALL " | grep -q ' AMD ' && p+=("${pkgs_amd_deb[@]}")
+  echo " $GPU_ALL " | grep -q ' INTEL ' && p+=("${pkgs_intel_deb[@]}")
+  if echo " $GPU_ALL " | grep -q ' NVIDIA '; then
+    # Prefer generic GLVND stack; proprietary driver is user's choice
+    p+=(libglvnd0 libegl1 libgles2)
+    # Optional: if nvidia package family exists, suggest utils only
+  fi
+  printf '%s\n' "${p[@]}" | awk '!a[$0]++'
+}
+
+collect_dnf_pkgs() {
+  local p=(
+    python3 python3-gobject python3-cairo python3-numpy python3-pyopengl python3-pip
+    gtk4 libadwaita
+    pipewire pipewire-pulseaudio pulseaudio-utils
+    mesa-libGL mesa-libEGL libepoxy
+  )
+  echo " $GPU_ALL " | grep -q ' AMD ' && p+=(mesa-dri-drivers mesa-vulkan-drivers)
+  echo " $GPU_ALL " | grep -q ' INTEL ' && p+=(mesa-dri-drivers mesa-vulkan-drivers intel-media-driver)
+  echo " $GPU_ALL " | grep -q ' NVIDIA ' && p+=(libglvnd egl-wayland)
+  printf '%s\n' "${p[@]}" | awk '!a[$0]++'
+}
+
+host_python_ok() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  PYTHONNOUSERSITE=1 python3 - <<'PY' 2>/dev/null
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Gtk, Adw  # noqa: F401
+PY
+}
+
+install_host_deps() {
   if command -v pacman >/dev/null 2>&1; then
-    local pkgs=(
-      gtk4 libadwaita
-      python python-gobject python-cairo python-numpy python-opengl
-      pipewire pipewire-pulse mesa
-    )
-    echo "==> Installing packages with pacman (polkit password may be required)…"
+    mapfile -t pkgs < <(collect_arch_pkgs)
+    log "Installing Arch/CachyOS packages for GPU [$GPU_ALL]:"
+    printf '  %s\n' "${pkgs[@]}" >&2
     if command -v pkexec >/dev/null 2>&1; then
       pkexec pacman -S --needed --noconfirm "${pkgs[@]}"
     else
@@ -70,33 +146,20 @@ install_deps() {
     fi
     return
   fi
-
   if command -v apt-get >/dev/null 2>&1; then
-    local pkgs=(
-      python3 python3-gi python3-gi-cairo
-      gir1.2-gtk-4.0 gir1.2-adw-1
-      libgtk-4-1 libadwaita-1-0
-      python3-numpy python3-opengl
-      pipewire pipewire-pulse pulseaudio-utils
-    )
-    echo "==> Installing packages with apt (password may be required)…"
+    mapfile -t pkgs < <(collect_deb_pkgs)
+    log "Installing Debian/Ubuntu packages for GPU [$GPU_ALL]…"
+    local cmd="apt-get update -qq && apt-get install -y ${pkgs[*]}"
     if command -v pkexec >/dev/null 2>&1; then
-      pkexec bash -c "apt-get update -qq && apt-get install -y ${pkgs[*]}"
+      pkexec bash -c "$cmd"
     else
-      sudo apt-get update -qq
-      sudo apt-get install -y "${pkgs[@]}"
+      sudo bash -c "$cmd"
     fi
     return
   fi
-
   if command -v dnf >/dev/null 2>&1; then
-    local pkgs=(
-      python3 python3-gobject python3-cairo
-      gtk4 libadwaita
-      python3-numpy python3-pyopengl
-      pipewire pipewire-pulseaudio pulseaudio-utils
-    )
-    echo "==> Installing packages with dnf (password may be required)…"
+    mapfile -t pkgs < <(collect_dnf_pkgs)
+    log "Installing Fedora packages for GPU [$GPU_ALL]…"
     if command -v pkexec >/dev/null 2>&1; then
       pkexec dnf install -y "${pkgs[@]}"
     else
@@ -104,36 +167,159 @@ install_deps() {
     fi
     return
   fi
-
-  die "Unsupported distro. Install GTK4, libadwaita, PyGObject, numpy, PyOpenGL, pipewire-pulse manually."
+  die "Unsupported package manager. Install GTK4 + Mesa/NVIDIA GL stack manually."
 }
 
-if [[ ! -f "$APP_ROOT/sound-orbit" ]]; then
-  die "App payload missing inside AppImage ($APP_ROOT)"
+# --- isolated venv (avoids ~/.local pip conflicts) ---
+ensure_venv() {
+  local ver need_rebuild=0
+  ver="$(app_version)"
+  mkdir -p "$DATA_DIR"
+  export PYTHONNOUSERSITE=1
+
+  if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+    need_rebuild=1
+  elif [[ ! -f "$STAMP_FILE" ]] || [[ "$(cat "$STAMP_FILE" 2>/dev/null || true)" != "$ver|$GPU_PRIMARY" ]]; then
+    need_rebuild=1
+  fi
+
+  if [[ "$need_rebuild" -eq 1 ]]; then
+    log "Creating isolated venv at $VENV_DIR (system-site-packages for GTK/gi)"
+    # system-site-packages → use distro gi/gtk; venv numpy/OpenGL preferred
+    python3 -m venv --system-site-packages --clear "$VENV_DIR"
+    # shellcheck disable=SC1091
+    # Prefer venv pip packages for pure-Python to avoid broken user-site mixes
+    "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip wheel
+    "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check -q \
+      "numpy>=1.24" "PyOpenGL>=3.1.0"
+    printf '%s\n' "$ver|$GPU_PRIMARY" >"$STAMP_FILE"
+    log "venv ready"
+  fi
+}
+
+venv_deps_ok() {
+  export PYTHONNOUSERSITE=1
+  [[ -x "$VENV_DIR/bin/python" ]] || return 1
+  "$VENV_DIR/bin/python" - <<'PY' 2>/dev/null
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Gtk, Adw  # noqa: F401
+import numpy  # noqa: F401
+from OpenGL import GL  # noqa: F401
+PY
+}
+
+apply_gpu_env() {
+  # Soft defaults; never override explicit user settings for most vars
+  case "$GPU_PRIMARY" in
+    NVIDIA)
+      if [[ -e /dev/nvidia0 ]]; then
+        export __GLX_VENDOR_LIBRARY_NAME="${__GLX_VENDOR_LIBRARY_NAME:-nvidia}"
+      fi
+      export __GL_THREADED_OPTIMIZATIONS="${__GL_THREADED_OPTIMIZATIONS:-1}"
+      # Wayland + NVIDIA often needs egl-wayland (package). Optional X11 fallback later.
+      ;;
+    AMD)
+      # Mesa RADV / radeonsi — ensure no accidental nvidia vendor override
+      if [[ -z "${__GLX_VENDOR_LIBRARY_NAME:-}" ]]; then
+        unset __GLX_VENDOR_LIBRARY_NAME 2>/dev/null || true
+      fi
+      ;;
+    INTEL)
+      if [[ -z "${__GLX_VENDOR_LIBRARY_NAME:-}" ]]; then
+        unset __GLX_VENDOR_LIBRARY_NAME 2>/dev/null || true
+      fi
+      ;;
+  esac
+}
+
+# --- main ---
+[[ -f "$APP_ROOT/sound-orbit" ]] || die "App payload missing ($APP_ROOT)"
+
+if ! host_python_ok; then
+  if ask_yes "SoundOrbit — 依存パッケージ" \
+    "GPU: <b>$GPU_ALL</b>\n\nGTK4 / Python バインディング等が不足しています。\nGPU 向けパッケージを含めてインストールしますか？"; then
+    install_host_deps
+  else
+    die "Host dependencies missing."
+  fi
+  host_python_ok || die "Still missing GTK/PyGObject after install."
 fi
 
-if ! deps_ok; then
-  if ask_yes "SoundOrbit" \
-    "Required packages are missing (GTK4 / libadwaita / numpy / PyOpenGL).\n\nInstall them now with the system package manager?"; then
-    install_deps
-  else
-    die "Dependencies not installed. See README for pacman/apt/dnf packages."
+# Always ensure GPU-specific packages on first stamp or when forced
+FORCE_PKGS="${SOUNDORBIT_INSTALL_PKGS:-0}"
+if [[ "$FORCE_PKGS" == "1" ]] || [[ ! -f "$DATA_DIR/pkgs.stamp" ]]; then
+  if [[ "${SOUNDORBIT_SKIP_PKGS:-0}" != "1" ]]; then
+    if [[ ! -f "$DATA_DIR/pkgs.stamp" ]]; then
+      if ask_yes "SoundOrbit — GPU パッケージ" \
+        "検出 GPU: <b>$GPU_ALL</b> (primary=$GPU_PRIMARY)\n\nOpenGL 用のベンダー別パッケージを入れますか？\n（「Unable to create a GL Context」対策）"; then
+        install_host_deps || true
+        mkdir -p "$DATA_DIR"
+        echo "$GPU_ALL" >"$DATA_DIR/pkgs.stamp"
+      else
+        mkdir -p "$DATA_DIR"
+        echo "skipped" >"$DATA_DIR/pkgs.stamp"
+      fi
+    fi
   fi
-  if ! deps_ok; then
-    die "Dependencies still missing after install. Try: pacman -S python-gobject python-numpy python-opengl gtk4 libadwaita"
-  fi
-  show_msg "SoundOrbit" "Dependencies installed. Starting…"
+fi
+
+ensure_venv
+if ! venv_deps_ok; then
+  log "venv incomplete — reinstalling host + venv"
+  install_host_deps || true
+  rm -f "$STAMP_FILE"
+  ensure_venv
+  venv_deps_ok || die "venv still broken. Check: pacman -S python-gobject gtk4 python-opengl mesa"
 fi
 
 if ! command -v parec >/dev/null 2>&1; then
-  echo "warning: parec not found — audio capture needs pipewire-pulse" >&2
+  log "warning: parec missing (pipewire-pulse) — audio may not work"
 fi
 
-# Optional: also offer "install to app menu" via env
 if [[ "${SOUNDORBIT_INSTALL:-}" == "1" ]]; then
   if [[ -x "$APP_ROOT/install.sh" ]]; then
-    (cd "$APP_ROOT" && bash ./install.sh)
+    (cd "$APP_ROOT" && bash ./install.sh) || true
   fi
 fi
 
-exec python3 "$APP_ROOT/sound-orbit" "$@"
+apply_gpu_env
+export PYTHONNOUSERSITE=1
+export SOUNDORBIT_GPU_PRIMARY="$GPU_PRIMARY"
+export SOUNDORBIT_GPU_ALL="$GPU_ALL"
+
+PY="$VENV_DIR/bin/python"
+APP="$APP_ROOT/sound-orbit"
+
+# Launch strategies for GL context issues (Wayland/NVIDIA etc.)
+# User can force: SOUNDORBIT_GL=x11|wayland|software
+GL_MODE="${SOUNDORBIT_GL:-auto}"
+
+# Prefer X11 on Wayland+NVIDIA unless user overrode backend (common GL context fix)
+if [[ "$GL_MODE" == "auto" \
+   && -z "${GDK_BACKEND:-}" \
+   && "${XDG_SESSION_TYPE:-}" == "wayland" \
+   && "$GPU_PRIMARY" == "NVIDIA" ]]; then
+  log "Wayland + NVIDIA → defaulting GDK_BACKEND=x11 (override with SOUNDORBIT_GL=wayland)"
+  export GDK_BACKEND=x11
+fi
+
+case "$GL_MODE" in
+  x11)
+    log "Launch [x11]"
+    exec env GDK_BACKEND=x11 "$PY" "$APP"
+    ;;
+  wayland)
+    log "Launch [wayland]"
+    exec env GDK_BACKEND=wayland "$PY" "$APP"
+    ;;
+  software)
+    log "Launch [software llvmpipe]"
+    exec env LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe "$PY" "$APP"
+    ;;
+  auto|*)
+    log "Launch [auto] GPU=$GPU_PRIMARY backend=${GDK_BACKEND:-default}"
+    exec "$PY" "$APP"
+    ;;
+esac

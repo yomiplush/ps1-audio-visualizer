@@ -88,6 +88,14 @@ fi
 chmod +x "$APPDIR/usr/share/sound-orbit/sound-orbit" \
          "$APPDIR/usr/share/sound-orbit/install.sh" || true
 
+# Runtime helpers for AppRun (GPU detect) — packaging/ is excluded from payload
+mkdir -p "$APPDIR/usr/share/sound-orbit-runtime"
+install -m 644 "$PKG/gpu-detect.sh" "$APPDIR/usr/share/sound-orbit-runtime/gpu-detect.sh"
+# Also keep a copy under app tree for source installs that vendor AppRun
+mkdir -p "$APPDIR/usr/share/sound-orbit/packaging/appimage"
+install -m 644 "$PKG/gpu-detect.sh" \
+  "$APPDIR/usr/share/sound-orbit/packaging/appimage/gpu-detect.sh"
+
 # Launcher name expected by desktop Exec=
 install -m 755 "$PKG/AppRun" "$APPDIR/AppRun"
 # Also provide usr/bin/sound-orbit for desktop integration inside image
