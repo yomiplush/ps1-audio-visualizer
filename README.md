@@ -1,51 +1,45 @@
 # SoundOrbit
-Windows Version has under developed situation...hold on beer for this.
 
+Fullscreen **3D system-audio visualizer** — PS1-style chunky pixels, CRT post, 256-color look.
 
-Fullscreen **3D system-audio visualizer** — PS1-style chunky pixels, CRT look, 256-color post, system audio via PipeWire.
+Reacts to **whatever is playing on the PC**.
 
-**No compile.** One AppImage → auto GPU setup → app menu → run.
+| Platform | Download |
+|----------|----------|
+| **Linux** | [AppImage](https://github.com/yomiplush/ps1-audio-visualizer/releases/latest) → `SoundOrbit-Linux-x86_64.AppImage` |
+| **Windows 11** | [same Release](https://github.com/yomiplush/ps1-audio-visualizer/releases/latest) → `SoundOrbit-Windows-x64.exe` |
+
+**[Latest Release (Linux + Windows)](https://github.com/yomiplush/ps1-audio-visualizer/releases/latest)**
 
 ---
 
-## Install (AppImage)
-
-### 1. Download
-
-**[Latest Release](https://github.com/yomiplush/ps1-audio-visualizer/releases/latest)**  
-→ `SoundOrbit-<version>-x86_64.AppImage`
-
-### 2. Run once
+## Linux (AppImage)
 
 ```bash
-chmod +x SoundOrbit-*-x86_64.AppImage
-./SoundOrbit-*-x86_64.AppImage
+# Download SoundOrbit-Linux-x86_64.AppImage from Releases, then:
+chmod +x SoundOrbit-Linux-x86_64.AppImage
+./SoundOrbit-Linux-x86_64.AppImage
 ```
 
 ### What happens automatically
 
 | Step | Behavior |
 |------|----------|
-| **GPU detect** | AMD / NVIDIA / Intel (UHD·Iris·Arc) / hybrid |
-| **Packages** | Installs GTK4 + **vendor-specific GL stack** via pacman/apt/dnf (polkit password once) |
-| **venv** | `~/.local/share/sound-orbit/venv` — isolates numpy/PyOpenGL (`PYTHONNOUSERSITE=1`) |
-| **GL autofix** | Probes context; tries default → `GDK_BACKEND=x11` → software GL |
-| **App menu** | Adds **サウンドオービット** + `~/.local/bin/sound-orbit` |
+| **GPU detect** | AMD / NVIDIA / Intel / hybrid |
+| **Packages** | Installs only *missing* deps (CachyOS-safe; no pipewire downgrade) |
+| **venv** | `~/.local/share/sound-orbit/venv` |
+| **GL autofix** | Multi-mode probe + re-launch (esp. NVIDIA Wayland) |
+| **App menu** | **サウンドオービット** + `~/.local/bin/sound-orbit` |
 
-NVIDIA + Wayland prefers X11 backend automatically. Kernel `nvidia` module is **not** installed (must already match your system); `nvidia-utils` / `egl-wayland` are.
-
-### Skip automation (optional)
+Optional:
 
 ```bash
-SOUNDORBIT_SKIP_PKGS=1 ./SoundOrbit-*.AppImage   # no pacman/apt
-SOUNDORBIT_NO_MENU=1 ./SoundOrbit-*.AppImage      # no desktop entry
-SOUNDORBIT_FORCE_SETUP=1 ./SoundOrbit-*.AppImage  # re-run full setup
-SOUNDORBIT_GL=x11|wayland|software ./SoundOrbit-*.AppImage
+SOUNDORBIT_SKIP_PKGS=1 ./SoundOrbit-Linux-x86_64.AppImage
+SOUNDORBIT_GL_MODE=nvidia-wayland ./SoundOrbit-Linux-x86_64.AppImage
+SOUNDORBIT_GL_MODE=software ./SoundOrbit-Linux-x86_64.AppImage
 ```
 
----
-
-## Controls
+### Controls (Linux)
 
 | Key | Action |
 |-----|--------|
@@ -54,21 +48,7 @@ SOUNDORBIT_GL=x11|wayland|software ./SoundOrbit-*.AppImage
 | `Space` | Camera orbit |
 | `H` / click | Help show/hide |
 
----
-
-## Environment (look / quality)
-
-```bash
-SOUNDORBIT_QUALITY=low|medium|high|ultra
-SOUNDORBIT_ECO=0
-SOUNDORBIT_INTERNAL=240x180
-SOUNDORBIT_CRT=0
-SOUNDORBIT_TRAIL=0
-```
-
----
-
-## Developers
+### Linux build from source
 
 ```bash
 git clone https://github.com/yomiplush/ps1-audio-visualizer.git
@@ -79,16 +59,51 @@ cd ps1-audio-visualizer
 
 ---
 
-## License
+## Windows 11 (.exe)
 
-MIT — see [LICENSE](LICENSE).
+**Separate codebase** under [`windows/`](windows/) (GLFW + WASAPI — not GTK).
+
+```text
+Download SoundOrbit-Windows-x64.exe from Releases → double-click
+```
+
+| Key | Action |
+|-----|--------|
+| Esc / Q | Quit |
+| Space | Camera orbit |
+| F11 / F | Fullscreen |
+
+- Audio: **WASAPI loopback** (system playback)
+- Needs GPU drivers with **OpenGL 3.3**
+
+### Windows rebuild
+
+```powershell
+cd windows
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+# → dist\SoundOrbit.exe
+```
+
+Details: [`windows/README.md`](windows/README.md)
 
 ---
 
-## Windows 11 (separate build)
+## Release layout
 
-Windows uses a **dedicated** tree (`windows/`) — not the Linux AppImage.
+Each unified release (from **v1.6.0**) attaches:
 
-- Source: [`windows/README.md`](windows/README.md)
-- Build on Windows: `cd windows && powershell -File .\build.ps1` → `dist\SoundOrbit.exe`
-- CI: GitHub Actions workflow `Windows Build` produces the `.exe` artifact
+| Asset | Platform |
+|-------|----------|
+| `SoundOrbit-Linux-x86_64.AppImage` | Linux |
+| `SoundOrbit-Windows-x64.exe` | Windows |
+
+CI:
+
+- Linux AppImage: built with `packaging/appimage/build.sh` (maintainer / Linux host)
+- Windows exe: GitHub Actions `Windows Build` on `windows-latest`
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

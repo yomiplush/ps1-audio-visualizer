@@ -1,0 +1,80 @@
+# When a version tag is pushed (v*), attach Linux AppImage (if present in dist/)
+# and always build Windows exe. Prefer using packaging scripts + this workflow together.
+name: Release dual assets
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to upload assets to (e.g. v1.6.0)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build Windows exe
+        shell: pwsh
+        working-directory: windows
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt
+          pyinstaller --noconfirm --clean SoundOrbitWin.spec
+          Copy-Item dist\SoundOrbit.exe dist\SoundOrbit-Windows-x64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SoundOrbit-Windows-x64
+          path: windows/dist/SoundOrbit-Windows-x64.exe
+
+  publish:
+    needs: [windows-exe]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: SoundOrbit-Windows-x64
+          path: out
+      - name: Build Linux AppImage
+        run: |
+          chmod +x packaging/appimage/build.sh packaging/appimage/AppRun || true
+          ./packaging/appimage/build.sh
+          mkdir -p out
+          VER=$(python3 -c "import re,pathlib; t=pathlib.Path('src/soundorbit/__init__.py').read_text(); print(re.search(r'__version__\\s*=\\s*\"([^\"]+)\"',t).group(1))")
+          cp "dist/SoundOrbit-${VER}-x86_64.AppImage" out/SoundOrbit-Linux-x86_64.AppImage
+          cp "dist/SoundOrbit-${VER}-x86_64.AppImage" "out/SoundOrbit-${VER}-x86_64.AppImage" || true
+          ls -lh out/
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Upload to GitHub Release
+        if: steps.tag.outputs.name != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          files: |
+            out/SoundOrbit-Linux-x86_64.AppImage
+            out/SoundOrbit-Windows-x64.exe
+            out/SoundOrbit-*.AppImage
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
