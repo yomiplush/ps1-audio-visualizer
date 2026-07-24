@@ -82,3 +82,13 @@ cd ps1-audio-visualizer
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+## Windows 11 (separate build)
+
+Windows uses a **dedicated** tree (`windows/`) — not the Linux AppImage.
+
+- Source: [`windows/README.md`](windows/README.md)
+- Build on Windows: `cd windows && powershell -File .\build.ps1` → `dist\SoundOrbit.exe`
+- CI: GitHub Actions workflow `Windows Build` produces the `.exe` artifact

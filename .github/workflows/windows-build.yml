@@ -1,0 +1,49 @@
+name: Windows Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "windows/**"
+      - ".github/workflows/windows-build.yml"
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps & build
+        shell: pwsh
+        working-directory: windows
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install -r requirements.txt
+          pyinstaller --noconfirm --clean SoundOrbitWin.spec
+          Get-Item dist\SoundOrbit.exe | Format-List Name, Length, FullName
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SoundOrbit-Windows-x64
+          path: windows/dist/SoundOrbit.exe
+
+      - name: Attach to release (if tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: windows/dist/SoundOrbit.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

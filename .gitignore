@@ -28,3 +28,9 @@ Thumbs.db
 /dist/*
 !/dist/.gitkeep
 packaging/appimage/sound-orbit.png
+
+# Windows build outputs
+windows/dist/
+windows/build/
+windows/.venv-win/
+windows/*.spec.bak
