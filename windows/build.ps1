@@ -40,6 +40,45 @@ if (-not (Test-Path $exe)) {
   Write-Error "Build failed: dist\SoundOrbit.exe not found"
 }
 
+# Optional Authenticode signing (reduces Smart App Control / SmartScreen blocks)
+# Set SOUNDOBIT_SIGN_PFX + SOUNDOBIT_SIGN_PASSWORD, or SOUNDOBIT_SIGN_THUMBPRINT (store cert)
+$pfx = $env:SOUNDOBIT_SIGN_PFX
+$pwd = $env:SOUNDOBIT_SIGN_PASSWORD
+$thumb = $env:SOUNDOBIT_SIGN_THUMBPRINT
+$signtool = $null
+foreach ($c in @(
+  "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe",
+  "${env:ProgramFiles}\Windows Kits\10\bin\*\x64\signtool.exe"
+)) {
+  $hit = Get-Item $c -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+  if ($hit) { $signtool = $hit.FullName; break }
+}
+
+if ($signtool -and ($pfx -or $thumb)) {
+  Write-Host "==> Authenticode signing with $signtool" -ForegroundColor Cyan
+  $ts = "http://timestamp.digicert.com"
+  if ($pfx) {
+    if ($pwd) {
+      & $signtool sign /fd SHA256 /tr $ts /td SHA256 /f $pfx /p $pwd $exe
+    } else {
+      & $signtool sign /fd SHA256 /tr $ts /td SHA256 /f $pfx $exe
+    }
+  } else {
+    & $signtool sign /fd SHA256 /tr $ts /td SHA256 /sha1 $thumb $exe
+  }
+  if ($LASTEXITCODE -ne 0) {
+    Write-Warning "signtool failed (exit $LASTEXITCODE). EXE left unsigned."
+  } else {
+    Write-Host "Signed OK." -ForegroundColor Green
+    & $signtool verify /pa $exe
+  }
+} else {
+  Write-Host ""
+  Write-Host "Note: EXE is UNSIGNED. Smart App Control / SmartScreen may block it." -ForegroundColor Yellow
+  Write-Host "  To sign: install Windows SDK (signtool), set SOUNDOBIT_SIGN_PFX + password, re-run build.ps1"
+  Write-Host "  Or use Azure Trusted Signing. See windows/README.md"
+}
+
 Write-Host ""
 Write-Host "Built: $exe" -ForegroundColor Green
 Write-Host "Size:  $([math]::Round((Get-Item $exe).Length / 1MB, 1)) MB"

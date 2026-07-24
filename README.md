@@ -84,6 +84,9 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 # → dist\SoundOrbit.exe
 ```
 
+**Smart App Control:** unsigned GitHub builds are often blocked. That is normal.  
+User can allow once via Windows UI / Unblock; for public distribution, **code-sign** the exe (see [`windows/README.md`](windows/README.md)). There is no app-side “bypass.”
+
 Details: [`windows/README.md`](windows/README.md)
 
 ---
