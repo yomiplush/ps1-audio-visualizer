@@ -23,3 +23,8 @@ Thumbs.db
 # Local / runtime
 *.log
 .cache/
+
+# AppImage build (keep scripts; ignore outputs / tools)
+/dist/*
+!/dist/.gitkeep
+packaging/appimage/sound-orbit.png

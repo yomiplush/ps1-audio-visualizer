@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# SoundOrbit AppImage launcher.
+# Bundles the app; uses host Python + GTK/OpenGL packages (auto-installs if missing).
+set -euo pipefail
+
+HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+APP_ROOT="$HERE/usr/share/sound-orbit"
+export PATH="${HERE}/usr/bin:${PATH:-/usr/bin}"
+
+# Prefer host tools for audio (parec/pactl must match running PipeWire)
+# Keep bundled PATH second.
+
+die() { echo "error: $*" >&2; exit 1; }
+
+have_python() {
+  command -v python3 >/dev/null 2>&1
+}
+
+deps_ok() {
+  have_python || return 1
+  python3 - <<'PY' 2>/dev/null
+import gi
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Gtk, Adw  # noqa: F401
+import numpy  # noqa: F401
+from OpenGL import GL  # noqa: F401
+PY
+}
+
+show_msg() {
+  local title="$1" text="$2"
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --info --title="$title" --width=420 --text="$text" 2>/dev/null || true
+  elif command -v kdialog >/dev/null 2>&1; then
+    kdialog --title "$title" --msgbox "$text" 2>/dev/null || true
+  else
+    echo "==> $title"
+    echo "$text"
+  fi
+}
+
+ask_yes() {
+  local title="$1" text="$2"
+  if command -v zenity >/dev/null 2>&1; then
+    zenity --question --title="$title" --width=420 --text="$text" 2>/dev/null
+    return $?
+  elif command -v kdialog >/dev/null 2>&1; then
+    kdialog --title "$title" --yesno "$text" 2>/dev/null
+    return $?
+  else
+    echo "$text"
+    read -r -p "Continue? [Y/n] " ans || true
+    [[ -z "${ans:-}" || "${ans,,}" == y* ]]
+  fi
+}
+
+install_deps() {
+  if command -v pacman >/dev/null 2>&1; then
+    local pkgs=(
+      gtk4 libadwaita
+      python python-gobject python-cairo python-numpy python-opengl
+      pipewire pipewire-pulse mesa
+    )
+    echo "==> Installing packages with pacman (polkit password may be required)…"
+    if command -v pkexec >/dev/null 2>&1; then
+      pkexec pacman -S --needed --noconfirm "${pkgs[@]}"
+    else
+      sudo pacman -S --needed --noconfirm "${pkgs[@]}"
+    fi
+    return
+  fi
+
+  if command -v apt-get >/dev/null 2>&1; then
+    local pkgs=(
+      python3 python3-gi python3-gi-cairo
+      gir1.2-gtk-4.0 gir1.2-adw-1
+      libgtk-4-1 libadwaita-1-0
+      python3-numpy python3-opengl
+      pipewire pipewire-pulse pulseaudio-utils
+    )
+    echo "==> Installing packages with apt (password may be required)…"
+    if command -v pkexec >/dev/null 2>&1; then
+      pkexec bash -c "apt-get update -qq && apt-get install -y ${pkgs[*]}"
+    else
+      sudo apt-get update -qq
+      sudo apt-get install -y "${pkgs[@]}"
+    fi
+    return
+  fi
+
+  if command -v dnf >/dev/null 2>&1; then
+    local pkgs=(
+      python3 python3-gobject python3-cairo
+      gtk4 libadwaita
+      python3-numpy python3-pyopengl
+      pipewire pipewire-pulseaudio pulseaudio-utils
+    )
+    echo "==> Installing packages with dnf (password may be required)…"
+    if command -v pkexec >/dev/null 2>&1; then
+      pkexec dnf install -y "${pkgs[@]}"
+    else
+      sudo dnf install -y "${pkgs[@]}"
+    fi
+    return
+  fi
+
+  die "Unsupported distro. Install GTK4, libadwaita, PyGObject, numpy, PyOpenGL, pipewire-pulse manually."
+}
+
+if [[ ! -f "$APP_ROOT/sound-orbit" ]]; then
+  die "App payload missing inside AppImage ($APP_ROOT)"
+fi
+
+if ! deps_ok; then
+  if ask_yes "SoundOrbit" \
+    "Required packages are missing (GTK4 / libadwaita / numpy / PyOpenGL).\n\nInstall them now with the system package manager?"; then
+    install_deps
+  else
+    die "Dependencies not installed. See README for pacman/apt/dnf packages."
+  fi
+  if ! deps_ok; then
+    die "Dependencies still missing after install. Try: pacman -S python-gobject python-numpy python-opengl gtk4 libadwaita"
+  fi
+  show_msg "SoundOrbit" "Dependencies installed. Starting…"
+fi
+
+if ! command -v parec >/dev/null 2>&1; then
+  echo "warning: parec not found — audio capture needs pipewire-pulse" >&2
+fi
+
+# Optional: also offer "install to app menu" via env
+if [[ "${SOUNDORBIT_INSTALL:-}" == "1" ]]; then
+  if [[ -x "$APP_ROOT/install.sh" ]]; then
+    (cd "$APP_ROOT" && bash ./install.sh)
+  fi
+fi
+
+exec python3 "$APP_ROOT/sound-orbit" "$@"

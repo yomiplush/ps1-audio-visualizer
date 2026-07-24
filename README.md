@@ -7,8 +7,40 @@ It captures the default PipeWire (PulseAudio-compatible) output monitor and reac
 Designed for **GNOME** (Wayland or X11). Works on other desktops too if GTK4 / libadwaita are installed.
 
 > **Important: there is nothing to compile.**  
-> SoundOrbit is a pure **Python** app. No `make`, `cmake`, `gcc`, or build step.  
-> Install system packages → clone → run `./install.sh` or `python3 ./sound-orbit`.
+> SoundOrbit is a pure **Python** app. No `make`, `cmake`, `gcc`, or build step.
+
+---
+
+## Easiest: AppImage (recommended)
+
+One file. Download → mark executable → run.
+
+```bash
+# From GitHub Releases (example):
+chmod +x SoundOrbit-*-x86_64.AppImage
+./SoundOrbit-*-x86_64.AppImage
+```
+
+On first launch, if GTK / numpy / OpenGL packages are missing, the AppImage **offers to install them** via your package manager (pacman / apt / dnf; polkit password once).
+
+Optional: also install a menu entry into `~/.local`:
+
+```bash
+SOUNDORBIT_INSTALL=1 ./SoundOrbit-*-x86_64.AppImage
+```
+
+### Build the AppImage yourself
+
+```bash
+git clone https://github.com/yomiplush/ps1-audio-visualizer.git
+cd ps1-audio-visualizer
+./packaging/appimage/build.sh
+# → dist/SoundOrbit-<version>-x86_64.AppImage
+```
+
+The AppImage is intentionally **thin** (~1 MB): it ships the app and a smart launcher; graphics/audio stacks stay on the host (correct for OpenGL + PipeWire).
+
+---
 
 ## Requirements
 
@@ -30,9 +62,9 @@ Designed for **GNOME** (Wayland or X11). Works on other desktops too if GTK4 / l
 
 ---
 
-## Quick start (Arch Linux / CachyOS)
+## From source (Arch Linux / CachyOS)
 
-Copy-paste in order:
+If you prefer git over AppImage, copy-paste in order:
 
 ```bash
 # 1) Dependencies (system packages only — no pip / venv)
