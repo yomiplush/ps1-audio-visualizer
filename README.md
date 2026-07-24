@@ -1,97 +1,81 @@
 # SoundOrbit
 
-Fullscreen **3D system-audio visualizer** with a PlayStation 1–style look (fixed low internal resolution, nearest-neighbor upscale).
+Fullscreen **3D system-audio visualizer** with a PlayStation 1–style look (chunky low internal resolution, nearest-neighbor upscale, CRT scanlines / barrel warp / afterimage).
 
-It captures the default PipeWire (PulseAudio-compatible) output monitor and reacts to whatever is playing on the system—browser, music player, games, and so on.
+Reacts to **whatever your PC is playing** (browser, music app, games, …) via PipeWire’s default output monitor.
 
-Designed for **GNOME** (Wayland or X11). Works on other desktops too if GTK4 / libadwaita are installed.
-
-> **Important: there is nothing to compile.**  
-> SoundOrbit is a pure **Python** app. No `make`, `cmake`, `gcc`, or build step.
+**No compile. No package build. Download the AppImage and run it.**
 
 ---
 
-## Easiest: AppImage (recommended)
+## Install (AppImage)
 
-One file. Download → mark executable → run.
+### 1. Download
+
+Get the latest **`SoundOrbit-*-x86_64.AppImage`** from:
+
+**[Releases](https://github.com/yomiplush/ps1-audio-visualizer/releases/latest)**
+
+| File | What it is |
+|------|------------|
+| `SoundOrbit-<version>-x86_64.AppImage` | The app (recommended) |
+
+### 2. Make it executable
 
 ```bash
-# From GitHub Releases (example):
 chmod +x SoundOrbit-*-x86_64.AppImage
+```
+
+Some browsers / file managers clear the executable bit after download—this step is required.
+
+### 3. Run
+
+```bash
 ./SoundOrbit-*-x86_64.AppImage
 ```
 
-On first launch, if GTK / numpy / OpenGL packages are missing, the AppImage **offers to install them** via your package manager (pacman / apt / dnf; polkit password once).
+Or from a file manager: double-click (if your desktop allows executing AppImages).
 
-Optional: also install a menu entry into `~/.local`:
+That’s it.
+
+---
+
+## First run (dependencies)
+
+The AppImage is **thin** (~1 MB): it ships SoundOrbit and a launcher.  
+**GTK 4, OpenGL, NumPy, and PipeWire tools stay on the host** (same idea as most Linux graphics apps—drivers and audio must match your system).
+
+If anything required is missing, the launcher **asks once** and installs packages with your package manager (polkit password):
+
+| Distro | Packages (installed automatically if you accept) |
+|--------|---------------------------------------------------|
+| **Arch / CachyOS** | `gtk4` `libadwaita` `python` `python-gobject` `python-cairo` `python-numpy` `python-opengl` `pipewire` `pipewire-pulse` `mesa` |
+| **Ubuntu / Debian** | `python3-gi` `gir1.2-gtk-4.0` `gir1.2-adw-1` `python3-numpy` `python3-opengl` `pipewire-pulse` `pulseaudio-utils` … |
+| **Fedora** | `python3-gobject` `gtk4` `libadwaita` `python3-numpy` `python3-pyopengl` `pipewire-pulseaudio` … |
+
+You can also install them yourself beforehand:
+
+```bash
+# Arch / CachyOS
+sudo pacman -S --needed \
+  gtk4 libadwaita \
+  python python-gobject python-cairo python-numpy python-opengl \
+  pipewire pipewire-pulse mesa
+```
+
+---
+
+## Optional: app menu install
+
+Run once with:
 
 ```bash
 SOUNDORBIT_INSTALL=1 ./SoundOrbit-*-x86_64.AppImage
 ```
 
-### Build the AppImage yourself
+This copies a launcher into `~/.local` and adds **サウンドオービット / SoundOrbit** to the app menu (same as `./install.sh` from source).
 
-```bash
-git clone https://github.com/yomiplush/ps1-audio-visualizer.git
-cd ps1-audio-visualizer
-./packaging/appimage/build.sh
-# → dist/SoundOrbit-<version>-x86_64.AppImage
-```
-
-The AppImage is intentionally **thin** (~1 MB): it ships the app and a smart launcher; graphics/audio stacks stay on the host (correct for OpenGL + PipeWire).
-
----
-
-## Requirements
-
-| Component | Notes |
-|-----------|--------|
-| Python | 3.11+ (system package; **do not use a venv**) |
-| Desktop | GNOME recommended (GTK4 / libadwaita) |
-| Audio | PipeWire + PulseAudio compatibility (`parec`, `pactl`) |
-| Graphics | OpenGL 3.3+ (Mesa + PyOpenGL + GTK `GLArea`) |
-
-### Runtime libraries
-
-- GTK 4 + libadwaita
-- PyGObject (`python-gobject`)
-- NumPy (`python-numpy`)
-- PyOpenGL (`python-opengl`)
-- Cairo bindings recommended (`python-cairo`) for text labels
-- `parec` / `pactl` (from `pipewire-pulse`)
-
----
-
-## From source (Arch Linux / CachyOS)
-
-If you prefer git over AppImage, copy-paste in order:
-
-```bash
-# 1) Dependencies (system packages only — no pip / venv)
-sudo pacman -S --needed \
-  git \
-  gtk4 libadwaita \
-  python python-gobject python-cairo python-numpy python-opengl \
-  pipewire pipewire-pulse mesa
-
-# 2) Source
-git clone https://github.com/yomiplush/ps1-audio-visualizer.git
-cd ps1-audio-visualizer
-
-# 3) Install for current user (~/.local) — not a compile step
-chmod +x install.sh sound-orbit
-./install.sh
-
-# 4) Run
-# If ~/.local/bin is on PATH:
-sound-orbit
-# Or always works:
-~/.local/bin/sound-orbit
-# Or without install, from the repo directory:
-python3 ./sound-orbit
-```
-
-### PATH (if `sound-orbit` is “command not found”)
+Ensure `~/.local/bin` is on your `PATH` if you want the `sound-orbit` command:
 
 ```bash
 # fish
@@ -101,157 +85,23 @@ fish_add_path ~/.local/bin
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
 ```
 
-### Verify dependencies
-
-```bash
-python3 - <<'PY'
-import gi
-gi.require_version("Gtk", "4.0")
-gi.require_version("Adw", "1")
-from gi.repository import Gtk, Adw  # noqa: F401
-import numpy  # noqa: F401
-from OpenGL import GL  # noqa: F401
-print("deps ok")
-PY
-command -v parec && command -v pactl
-```
-
-If any import fails, reinstall the matching **pacman** package (not pip).
-
 ---
 
-## Dependencies by distribution
+## If the AppImage won’t start
 
-### Arch Linux / CachyOS
-
-```bash
-sudo pacman -S --needed \
-  gtk4 libadwaita \
-  python python-gobject python-cairo python-numpy python-opengl \
-  pipewire pipewire-pulse mesa
-```
-
-`parec` and `pactl` come with `pipewire-pulse`.
-
-### Ubuntu / Debian
+| Symptom | Fix |
+|---------|-----|
+| `Permission denied` | `chmod +x SoundOrbit-*.AppImage` |
+| “Not marked as executable” in file manager | Properties → Allow executing, or use the terminal as above |
+| FUSE / “Cannot mount AppImage” | `./SoundOrbit-*.AppImage --appimage-extract-and-run` |
+| Missing GTK / numpy / OpenGL | Accept the install prompt, or install packages from the table above |
+| Black window / GL error | Update GPU drivers / `mesa` (or NVIDIA proprietary stack) |
+| No reaction to sound | Play audio on the **default** output; need `parec` (`pipewire-pulse`) |
 
 ```bash
-sudo apt update
-sudo apt install -y \
-  python3 python3-gi python3-gi-cairo \
-  gir1.2-gtk-4.0 gir1.2-adw-1 \
-  libgtk-4-1 libadwaita-1-0 \
-  python3-numpy python3-opengl \
-  pipewire pipewire-pulse pipewire-audio-client-libraries \
-  pulseaudio-utils
-```
-
-### Fedora
-
-```bash
-sudo dnf install -y \
-  python3 python3-gobject \
-  gtk4 libadwaita \
-  python3-numpy python3-pyopengl python3-cairo \
-  pipewire pipewire-pulseaudio \
-  pulseaudio-utils mesa-libGL
-```
-
----
-
-## Get the source
-
-```bash
-git clone https://github.com/yomiplush/ps1-audio-visualizer.git
-cd ps1-audio-visualizer
-```
-
-(Or use an existing checkout, e.g. `~/Projects/sound-orbit`.)
-
----
-
-## Install (user-local, app menu)
-
-No root required for the app itself—copies into `~/.local`:
-
-```bash
-chmod +x install.sh sound-orbit
-./install.sh
-```
-
-Then:
-
-- Run: `sound-orbit` or `~/.local/bin/sound-orbit`
-- Or open **Sound Orbit** / **サウンドオービット** from the app menu
-
-### Run without installing
-
-From the repository root:
-
-```bash
-python3 ./sound-orbit
-```
-
----
-
-## Troubleshooting (CachyOS / Arch)
-
-### “コンパイルできない / make がない / cmake がない”
-
-正常です。**ビルド不要**です。`./install.sh` はファイルを `~/.local` にコピーするだけです。
-
-### `./install.sh` が `deps` / import で失敗する
-
-`install.sh` は足りないモジュール名を表示します。venv や `pip install` は使わず:
-
-```bash
-sudo pacman -S --needed \
-  python-gobject python-cairo python-numpy python-opengl \
-  gtk4 libadwaita mesa
-```
-
-特に:
-
-| エラーの例 | 入れるパッケージ |
-|-----------|------------------|
-| `No module named 'gi'` | `python-gobject` |
-| `Adw` / `Gtk` namespace | `gtk4` `libadwaita` |
-| `No module named 'numpy'` | `python-numpy` |
-| `No module named 'OpenGL'` | `python-opengl` |
-| `parec` not found | `pipewire-pulse` |
-
-### `sound-orbit: command not found`
-
-```bash
-~/.local/bin/sound-orbit
-# or
-fish_add_path ~/.local/bin   # fish
-```
-
-### ウィンドウは出るが真っ黒 / OpenGL エラー
-
-```bash
-sudo pacman -S --needed mesa
-# NVIDIA プロプライエタリドライバ利用時はドライバが最新か確認
-```
-
-### 音に反応しない
-
-```bash
+# Audio sanity check
 pactl get-default-sink
-# 何か再生しながら:
-parec --device="$(pactl get-default-sink).monitor" --raw | head -c 100 | wc -c
-```
-
-PipeWire が動いていること、デフォルト出力が正しいことを確認してください。
-
-### venv を使ってしまった
-
-システムに入っている GTK / GI と切り離されるため、**非推奨**です。venv を無効にして、上記の `pacman` パッケージだけで起動してください。
-
-```bash
-deactivate  # if inside a venv
-python3 ./sound-orbit
+command -v parec
 ```
 
 ---
@@ -267,41 +117,76 @@ python3 ./sound-orbit
 
 ---
 
-## Quality & ECO
-
-On startup, SoundOrbit probes CPU / memory / GPU and picks **low** / **medium** / **high** / **ultra**.
-
-**ECO is on by default** (one step down). Integrated GPUs are biased more conservatively.
+## Options (environment variables)
 
 ```bash
-SOUNDORBIT_QUALITY=low sound-orbit       # low | medium | high | ultra
-SOUNDORBIT_ECO=0 sound-orbit             # disable ECO bias
-SOUNDORBIT_INTERNAL=240x180 sound-orbit  # fixed internal res (chunky default)
-SOUNDORBIT_INTERNAL=160x120 sound-orbit  # even more jagged
-SOUNDORBIT_INTERNAL=off sound-orbit      # window-proportional FBO
-SOUNDORBIT_CRT=0 sound-orbit             # disable CRT look
-SOUNDORBIT_CRT_BARREL=0.16 sound-orbit
-SOUNDORBIT_CRT_SCANLINE=0.92 sound-orbit
-SOUNDORBIT_CRT_VIGNETTE=0.62 sound-orbit
-SOUNDORBIT_TRAIL=0 sound-orbit           # disable afterimage
-SOUNDORBIT_TRAIL_MIX=0.78 sound-orbit
-SOUNDORBIT_TRAIL_DECAY=0.93 sound-orbit
+# Quality
+SOUNDORBIT_QUALITY=low ./SoundOrbit-*.AppImage    # low | medium | high | ultra
+SOUNDORBIT_ECO=0 ./SoundOrbit-*.AppImage          # disable ECO bias (default ECO on)
+
+# Pixel look
+SOUNDORBIT_INTERNAL=240x180 ./SoundOrbit-*.AppImage   # default chunky
+SOUNDORBIT_INTERNAL=160x120 ./SoundOrbit-*.AppImage   # more jagged
+SOUNDORBIT_INTERNAL=off ./SoundOrbit-*.AppImage       # window-proportional FBO
+
+# CRT
+SOUNDORBIT_CRT=0 ./SoundOrbit-*.AppImage
+SOUNDORBIT_CRT_BARREL=0.16 ./SoundOrbit-*.AppImage
+SOUNDORBIT_CRT_SCANLINE=0.92 ./SoundOrbit-*.AppImage
+SOUNDORBIT_CRT_VIGNETTE=0.62 ./SoundOrbit-*.AppImage
+
+# Afterimage
+SOUNDORBIT_TRAIL=0 ./SoundOrbit-*.AppImage
+SOUNDORBIT_TRAIL_MIX=0.78 ./SoundOrbit-*.AppImage
+SOUNDORBIT_TRAIL_DECAY=0.93 ./SoundOrbit-*.AppImage
 ```
-
-Internally the scene is drawn at a **PS1-class fixed resolution** and stretched with **nearest-neighbor**.
-
-### Memory watchdog
-
-If RSS climbs too much: purge particles/trails, run GC, throttle FPS.
 
 ---
 
 ## How it works
 
-1. Capture the default sink’s `.monitor` via `parec`
-2. Hann-windowed FFT → 96 logarithmic bands
-3. GTK4 `Gtk.GLArea` + OpenGL 3.3 visualizer
-4. Offscreen trails + CRT post (scanlines, barrel, vignette)
+1. Capture default sink `.monitor` with `parec`
+2. Hann-windowed FFT → 96 log bands
+3. GTK4 `GLArea` + OpenGL 3.3 scene (bars, orb, rings, particles)
+4. Post: trails, scanlines, barrel distortion, vignette
+
+---
+
+## For developers
+
+### Build the AppImage
+
+```bash
+git clone https://github.com/yomiplush/ps1-audio-visualizer.git
+cd ps1-audio-visualizer
+./packaging/appimage/build.sh
+# → dist/SoundOrbit-<version>-x86_64.AppImage
+```
+
+### Run from source (without AppImage)
+
+```bash
+# install host deps (see table above), then:
+python3 ./sound-orbit
+# or:
+./install.sh && sound-orbit
+```
+
+> Do **not** use a Python venv—GTK / PyGObject must come from the system packages.
+
+---
+
+## Requirements (host)
+
+| Component | Notes |
+|-----------|--------|
+| Linux x86_64 | AppImage target |
+| Python 3.11+ | System package |
+| GTK 4 + libadwaita | UI |
+| NumPy + PyOpenGL | Analysis / GL |
+| PipeWire + `parec` | System audio capture |
+| OpenGL 3.3+ | Via Mesa or vendor drivers |
+| Desktop | GNOME recommended (Wayland/X11) |
 
 ---
 
