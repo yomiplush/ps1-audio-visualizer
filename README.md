@@ -155,8 +155,16 @@ Override with environment variables:
 ```bash
 SOUNDORBIT_QUALITY=low sound-orbit       # low | medium | high | ultra
 SOUNDORBIT_ECO=0 sound-orbit             # disable ECO bias
-SOUNDORBIT_INTERNAL=320x240 sound-orbit  # fixed internal res (default PS1-style)
+SOUNDORBIT_INTERNAL=240x180 sound-orbit  # fixed internal res (chunky default)
+SOUNDORBIT_INTERNAL=160x120 sound-orbit  # even more jagged
 SOUNDORBIT_INTERNAL=off sound-orbit      # window-proportional FBO
+SOUNDORBIT_CRT=0 sound-orbit             # disable CRT look (scanlines / barrel / vignette)
+SOUNDORBIT_CRT_BARREL=0.16 sound-orbit   # screen curvature (corners)
+SOUNDORBIT_CRT_SCANLINE=0.92 sound-orbit # scanline strength 0..1 (heavy black bars)
+SOUNDORBIT_CRT_VIGNETTE=0.62 sound-orbit # dark corners 0..1
+SOUNDORBIT_TRAIL=0 sound-orbit           # disable full-screen afterimage
+SOUNDORBIT_TRAIL_MIX=0.78 sound-orbit    # afterimage blend 0..0.95
+SOUNDORBIT_TRAIL_DECAY=0.93 sound-orbit  # persistence (higher = longer tail)
 ```
 
 Internally the scene is drawn at a **PS1-class fixed resolution** and stretched with **nearest-neighbor** (chunky pixels). No FSR-style clean upscaling.

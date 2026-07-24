@@ -103,6 +103,7 @@ from OpenGL.GL import (
     glTexSubImage2D,
     glUniform1f,
     glUniform1i,
+    glUniform2f,
     glUniform3f,
     glUniform4f,
     glUniformMatrix4fv,
@@ -519,7 +520,7 @@ void main() {
 }
 """
 
-# 残像バッファ更新: prev * decay + scene（わずかにスケールしてカメラ回転の軌跡を強調）
+# 残像バッファ更新: 画面全体の強いフォスファー持続
 TRAIL_FRAG = """
 #version 330 core
 in vec2 vUv;
@@ -537,17 +538,17 @@ void main() {
     vec3 scene = texture(uScene, vUv).rgb;
     vec3 prev  = texture(uPrev, uvPrev).rgb;
 
-    // 明るい部分だけが残りやすい残像（全体を盛らない）
+    // 画面全体を強く蓄積（CRT 蛍光体 + モーションの尾）
     float lum = dot(scene, vec3(0.299, 0.587, 0.114));
-    float stamp = smoothstep(0.08, 0.55, lum);
-    vec3 col = prev * uDecay + scene * uSceneGain * stamp;
-    // 強めの Reinhard で蓄積白飛びを抑える
-    col = col / (1.0 + col * 0.85);
-    FragColor = vec4(clamp(col, 0.0, 1.2), 1.0);
+    float hiBoost = 1.0 + smoothstep(0.15, 0.75, lum) * 0.55;
+    vec3 col = prev * uDecay + scene * uSceneGain * hiBoost;
+    // クランプは弱め — 残像を長く・濃く残す
+    col = col / (1.0 + col * 0.12);
+    FragColor = vec4(clamp(col, 0.0, 1.6), 1.0);
 }
 """
 
-# 最終出力: シーン主導 + 薄い残像、トーンマップ付き
+# 最終出力: 残像 + RGB ずらし + CRT（バレル歪み / スキャンライン / 四隅ビネット）
 POST_FRAG = """
 #version 330 core
 in vec2 vUv;
@@ -559,7 +560,28 @@ uniform float uEnergy;
 uniform float uBeat;
 uniform float uTime;
 uniform float uExposure;   // 全体露出（1.0 前後）
+uniform float uBarrel;     // ブラウン管バレル歪み（0=なし）
+uniform float uScanline;   // スキャンライン強度 0..1
+uniform float uVignette;   // 四隅ビネット強度 0..1
+uniform vec2  uResolution; // 出力解像度（スキャンライン密度用）
+uniform vec2  uInternal;   // 内部描画解像度（ジャギ用 UV 量子化）
 out vec4 FragColor;
+
+// ブラウン管の画面湾曲: 中心から外側へ UV を押し出し、四隅は枠外→黒
+vec2 crtBarrel(vec2 uv, float amount) {
+    if (amount < 1e-5) {
+        return uv;
+    }
+    vec2 cc = uv * 2.0 - 1.0;
+    // わずかに横長を補正（管面の曲率っぽく）
+    cc.x *= 1.0 + abs(cc.y) * amount * 0.08;
+    cc.y *= 1.0 + abs(cc.x) * amount * 0.08;
+    float r2 = dot(cc, cc);
+    // 2 次 + 弱い 4 次で四隅を強く曲げる
+    float f = 1.0 + r2 * (amount + amount * 0.35 * r2);
+    cc *= f;
+    return cc * 0.5 + 0.5;
+}
 
 vec3 sampleSplit(sampler2D tex, vec2 uv, float amount) {
     if (amount < 1e-6) {
@@ -589,25 +611,87 @@ vec3 tonemap(vec3 x) {
 }
 
 void main() {
-    // 色収差は控えめ（酔い・苦手な人向け）
+    // 1) ブラウン管の画面歪曲（四隅が外側へ曲がる）
+    float barrel = uBarrel * (1.0 + uEnergy * 0.04 + uBeat * 0.03);
+    vec2 uv = crtBarrel(vUv, barrel);
+
+    // 歪みで UV が枠外 → CRT の黒ベゼル
+    vec2 edge = smoothstep(vec2(0.0), vec2(0.012), uv)
+              * smoothstep(vec2(0.0), vec2(0.012), 1.0 - uv);
+    float inScreen = edge.x * edge.y;
+    if (inScreen < 1e-4) {
+        FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+
+    // ジャギ強化: UV を内部解像度の格子にスナップ（階段状のピクセル）
+    vec2 ires = max(uInternal, vec2(64.0, 48.0));
+    uv = (floor(uv * ires) + 0.5) / ires;
+
+    // 色収差は控えめ（酔い・苦手な人向け）+ 端ほど少し強め
+    float edgeDist = length(uv - 0.5);
     float aberr = uAberr * (1.0 + uEnergy * 0.22 + uBeat * 0.30);
     aberr *= 0.97 + 0.03 * sin(uTime * 5.5 + uBeat * 4.0);
+    aberr *= 1.0 + edgeDist * 0.8;
+    // 収差もピクセル単位に量子化（にじみをブロック状に）
+    if (aberr > 1e-6) {
+        aberr = max(aberr, 1.0 / ires.x);
+    }
 
-    vec3 scene = sampleSplit(uScene, vUv, aberr);
-    vec3 trail = sampleSplit(uTrail, vUv, aberr * 1.05);
+    vec3 scene = sampleSplit(uScene, uv, aberr);
+    vec3 trail = sampleSplit(uTrail, uv, aberr * 1.05);
 
-    // 残像はシアン寄り・暗め。シーンを置き換えず「上乗せ」だけ
-    trail *= vec3(0.75, 0.95, 1.05);
-    // シーンと重なる分を引き、純粋な軌跡成分を多めに
+    // 画面全体の強い残像（CRT フォスファー）
+    trail *= vec3(0.80, 0.95, 1.08);
+    float mixAmt = clamp(uTrailMix, 0.0, 1.0);
+    mixAmt *= 0.95 + uEnergy * 0.12 + uBeat * 0.10;
+    // 過去映像をかなり濃くミックス
+    vec3 col = mix(scene, trail, mixAmt * 0.88);
+    // 軌跡をさらに加算（回転の尾がはっきり）
     vec3 ghost = max(trail - scene * 0.35, 0.0);
-    float mixAmt = uTrailMix * (0.55 + uEnergy * 0.15 + uBeat * 0.12);
-    vec3 col = scene * 0.92 + ghost * mixAmt;
+    col += ghost * mixAmt * 0.70;
+    // 現在フレームを少し戻して「今」も見えるように
+    col = mix(col, max(col, scene), 0.22);
 
     col *= uExposure;
 
-    // ごく薄いビネット（暗くしすぎない）
-    float vig = smoothstep(1.2, 0.3, length(vUv - 0.5));
-    col *= 0.92 + 0.08 * vig;
+    // 低ビット感（ジャギ・バンディング）
+    col = floor(col * 28.0 + 0.5) / 28.0;
+
+    // 2) スキャンライン — 画面全体にがっつり黒い横帯（少し透ける）
+    // 出力ピクセル基準なので端まで均一（歪み UV に依存しない）
+    float py = gl_FragCoord.y;
+    // 4px 周期: 2px 黒 + 2px 明 → 画面の半分が黒ライン
+    float slot = mod(floor(py), 4.0);
+    float mask = 1.0 - step(2.0, slot); // 0,1 行 = 黒 / 2,3 行 = 明
+    // 黒帯の縁を 1px だけ少しソフトに（ジャギを抑える）
+    float edge = abs(mod(py, 4.0) - 1.5);
+    float softMask = mix(mask, mask * 0.85, smoothstep(0.5, 1.5, edge));
+    // uScanline=1 → 黒帯は約 6% だけ残す（ほぼ黒・わずかに透ける）
+    float s = clamp(uScanline, 0.0, 1.0);
+    float darkKeep = mix(1.0, 0.06, s);
+    col *= mix(1.0, darkKeep, softMask);
+    // 明行はほぼそのまま（縞が黒として浮かぶように）
+    // ごく薄い走査の揺らぎ
+    float roll = 0.98 + 0.02 * sin(py * 0.35 - uTime * 1.6 + uBeat * 2.0);
+    col *= roll;
+
+    // 3) 四隅・外周のビネット（ブラウン管の影）
+    vec2 vc = uv * 2.0 - 1.0;
+    // 角を強く落とす（円形 + 角寄り）
+    float r = length(vc);
+    float soft = smoothstep(0.55, 1.18, r);
+    // 角だけさらに落とす（|x|+|y| 系）
+    float corner = pow(max(abs(vc.x), abs(vc.y)), 2.4);
+    corner = smoothstep(0.55, 1.05, corner);
+    float vig = 1.0 - uVignette * (soft * 0.72 + corner * 0.55);
+    vig = clamp(vig, 0.0, 1.0);
+    col *= vig;
+
+    // 端の薄いフォールオフ（ベゼルへなじませる）
+    col *= mix(0.0, 1.0, inScreen);
+    // CRT ガラスのわずかな周辺緑寄り（ごく薄く）
+    col *= mix(vec3(1.0), vec3(0.92, 1.0, 0.95), edgeDist * 0.12 * uVignette);
 
     col = tonemap(col);
     FragColor = vec4(col, 1.0);
@@ -1013,18 +1097,19 @@ class VisualizerRenderer:
         self._runtime_throttle = 1.0
         self._runtime_trails_ok = True
         self._runtime_param_scale = 1.0
-        # 内部解像度（PS1 風固定。FSR ではなくニアレストで引き伸ばす）
+        # 内部解像度（低め固定 + ニアレストでジャギを強調）
         self.ps1_mode = True
-        self.internal_w = 320
-        self.internal_h = 240
+        self.internal_w = 240
+        self.internal_h = 180
         self._apply_quality_params(self.quality)
         self._apply_internal_res_from_env()
 
     def _apply_internal_res_from_env(self) -> None:
-        """SOUNDORBIT_INTERNAL=320x240 などで上書き。off でスケール方式に戻す。"""
+        """SOUNDORBIT_INTERNAL=240x180 などで上書き。off でスケール方式に戻す。"""
         import os
 
-        raw = (os.environ.get("SOUNDORBIT_INTERNAL") or "320x240").strip().lower()
+        # 既定を低めにしてブロック感を出す
+        raw = (os.environ.get("SOUNDORBIT_INTERNAL") or "240x180").strip().lower()
         if raw in ("off", "0", "false", "native"):
             self.ps1_mode = False
             return
@@ -1032,23 +1117,80 @@ class VisualizerRenderer:
         if "x" in raw:
             try:
                 a, b = raw.split("x", 1)
-                self.internal_w = max(160, min(640, int(a)))
-                self.internal_h = max(120, min(480, int(b)))
+                # 下限を下げてよりジャギにできるように
+                self.internal_w = max(96, min(640, int(a)))
+                self.internal_h = max(72, min(480, int(b)))
             except ValueError:
-                self.internal_w, self.internal_h = 320, 240
+                self.internal_w, self.internal_h = 240, 180
         else:
-            self.internal_w, self.internal_h = 320, 240
+            self.internal_w, self.internal_h = 240, 180
 
     def _apply_quality_params(self, q: QualityProfile) -> None:
         self.trail_decay = q.trail_decay
         self.trail_scene_gain = q.trail_scene_gain
         self.trail_mix = q.trail_mix
-        self.trail_zoom = 0.997
+        self.trail_zoom = 0.998
         self.aberration = q.aberration if q.rgb_shift else 0.0
-        self.enable_trails = q.trails
+        # 画面全体残像は品質に関わらず有効（メモリ hard 時のみ resources が切る）
+        self.enable_trails = True
         self.fbo_scale = float(np.clip(q.fbo_scale, 0.35, 1.0))
         self.particle_emit_scale = q.particle_emit_scale
         self.exposure = 0.88  # 全体を少し暗めに（白飛び対策）
+        # ブラウン管演出（ポストプロセス）
+        self._apply_crt_from_env()
+        self._apply_trail_from_env()
+
+    def _apply_trail_from_env(self) -> None:
+        """残像の強さを環境変数で上書き。SOUNDORBIT_TRAIL=0 で無効。"""
+        import os
+
+        raw = (os.environ.get("SOUNDORBIT_TRAIL") or "1").strip().lower()
+        if raw in ("0", "off", "false", "no"):
+            self.enable_trails = False
+            return
+
+        def _f(name: str, default: float) -> float:
+            v = os.environ.get(name)
+            if v is None or not str(v).strip():
+                return default
+            try:
+                return float(v)
+            except ValueError:
+                return default
+
+        # 強めの既定（長い尾 + 濃いブレンド）
+        self.trail_decay = float(np.clip(_f("SOUNDORBIT_TRAIL_DECAY", 0.93), 0.5, 0.97))
+        self.trail_scene_gain = float(np.clip(_f("SOUNDORBIT_TRAIL_GAIN", 0.52), 0.1, 0.85))
+        self.trail_mix = float(np.clip(_f("SOUNDORBIT_TRAIL_MIX", 0.78), 0.0, 0.95))
+
+    def _apply_crt_from_env(self) -> None:
+        """
+        CRT 効果の既定値。SOUNDORBIT_CRT=0 で無効化。
+        SOUNDORBIT_CRT_BARREL / SCANLINE / VIGNETTE で個別上書き可。
+        """
+        import os
+
+        raw = (os.environ.get("SOUNDORBIT_CRT") or "1").strip().lower()
+        if raw in ("0", "off", "false", "no"):
+            self.crt_barrel = 0.0
+            self.crt_scanline = 0.0
+            self.crt_vignette = 0.0
+            return
+
+        def _f(name: str, default: float) -> float:
+            v = os.environ.get(name)
+            if v is None or not str(v).strip():
+                return default
+            try:
+                return float(v)
+            except ValueError:
+                return default
+
+        # 四隅が曲がる感じ / 横縞 / 四隅の黒さ
+        self.crt_barrel = float(np.clip(_f("SOUNDORBIT_CRT_BARREL", 0.16), 0.0, 0.45))
+        # 既定: 画面全体にほぼ黒の横帯（わずかに透ける）
+        self.crt_scanline = float(np.clip(_f("SOUNDORBIT_CRT_SCANLINE", 0.92), 0.0, 1.0))
+        self.crt_vignette = float(np.clip(_f("SOUNDORBIT_CRT_VIGNETTE", 0.62), 0.0, 1.0))
 
     def apply_resource_state(
         self,
@@ -1824,15 +1966,15 @@ class VisualizerRenderer:
         glDrawArrays(GL_POINTS, 0, self.particles.count)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
-        # ---- 2) 残像バッファ更新（ping-pong） ----
+        # ---- 2) 残像バッファ更新（ping-pong）— 画面全体 ----
         use_trails = self.enable_trails and self._runtime_trails_ok
         if use_trails:
             src = self._trail_idx
             dst = 1 - src
-            # 残像は控えめに伸ばす（白飛び防止のため上限を低く）
-            decay = float(np.clip(self.trail_decay + energy * 0.02 + beat * 0.03, 0.55, 0.82))
-            scene_gain = float(np.clip(self.trail_scene_gain + beat * 0.05, 0.15, 0.40))
-            zoom = float(self.trail_zoom - beat * 0.0012 - energy * 0.0006)
+            # 強めの持続（カメラ回転で太い尾が画面全体に残る）
+            decay = float(np.clip(self.trail_decay + energy * 0.01 + beat * 0.015, 0.82, 0.96))
+            scene_gain = float(np.clip(self.trail_scene_gain + beat * 0.05, 0.35, 0.72))
+            zoom = float(self.trail_zoom - beat * 0.0010 - energy * 0.0005)
 
             glBindFramebuffer(GL_FRAMEBUFFER, self._fbo_trail[dst])
             glViewport(0, 0, self._fbo_w, self._fbo_h)
@@ -1850,12 +1992,12 @@ class VisualizerRenderer:
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
             self._trail_idx = dst
             trail_tex = self._tex_trail[self._trail_idx]
-            trail_mix = float(np.clip(self.trail_mix + energy * 0.06 + beat * 0.08, 0.18, 0.48))
+            trail_mix = float(np.clip(self.trail_mix + energy * 0.04 + beat * 0.05, 0.55, 0.92))
         else:
             trail_tex = self._tex_scene
             trail_mix = 0.0
 
-        # ---- 3) 最終合成（RGB ずらし）→ GLArea の FB ----
+        # ---- 3) 最終合成（RGB ずらし + CRT）→ GLArea の FB ----
         aberr = float(self.aberration * (1.0 + energy * 0.18)) if self.aberration > 0 else 0.0
 
         glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo)
@@ -1869,6 +2011,19 @@ class VisualizerRenderer:
         glUniform1f(glGetUniformLocation(self.prog_post, "uBeat"), beat)
         glUniform1f(glGetUniformLocation(self.prog_post, "uTime"), t)
         glUniform1f(glGetUniformLocation(self.prog_post, "uExposure"), self.exposure)
+        glUniform1f(glGetUniformLocation(self.prog_post, "uBarrel"), float(self.crt_barrel))
+        glUniform1f(glGetUniformLocation(self.prog_post, "uScanline"), float(self.crt_scanline))
+        glUniform1f(glGetUniformLocation(self.prog_post, "uVignette"), float(self.crt_vignette))
+        glUniform2f(
+            glGetUniformLocation(self.prog_post, "uResolution"),
+            float(self.width),
+            float(self.height),
+        )
+        glUniform2f(
+            glGetUniformLocation(self.prog_post, "uInternal"),
+            float(max(1, self._fbo_w or self.internal_w)),
+            float(max(1, self._fbo_h or self.internal_h)),
+        )
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D, self._tex_scene)
         glActiveTexture(GL_TEXTURE1)
