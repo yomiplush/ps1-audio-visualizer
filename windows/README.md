@@ -24,6 +24,31 @@ py -3 -m venv .venv-win
 .\.venv-win\Scripts\python run_soundorbit.py
 ```
 
+## GPU auto-detect (NVIDIA / AMD / Intel)
+
+On startup the app queries `Win32_VideoController` and picks a quality profile:
+
+| Detected | Behavior |
+|----------|----------|
+| **NVIDIA** (GeForce/RTX/…) | Higher internal res, more particles, driver cache hints |
+| **AMD** dGPU | Similar high profile |
+| **AMD** iGPU / APU | ECO: fewer particles, lighter trails |
+| **Intel** HD/UHD/Iris | ECO (tuned for HD 620-class) |
+| **Intel Arc** | Mid-high profile |
+| **Hybrid** (e.g. Intel+NVIDIA) | Prefers dGPU for *profile*; if Windows still gives iGPU GL, ECO is applied + console tip |
+
+Override:
+
+```powershell
+# Force quality profile primary (does not always force the GL adapter)
+$env:SOUNDORBIT_GPU = "NVIDIA"   # or AMD / INTEL
+$env:SOUNDORBIT_QUALITY = "low"  # low | high | ultra
+.\SoundOrbit-Windows-x64.exe
+```
+
+Hybrid laptops: if the title bar shows `INTEL*` while you wanted NVIDIA, use  
+**Settings → System → Display → Graphics → SoundOrbit → High performance (NVIDIA)**.
+
 ## Controls
 
 | Key | Action |

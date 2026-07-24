@@ -464,20 +464,20 @@ class ParticleSystem:
 
 
 class VisualizerRenderer:
-    def __init__(self, band_count: int = BANDS) -> None:
+    def __init__(self, band_count: int = BANDS, profile: Optional[object] = None) -> None:
         self.bands = band_count
         self.width = 1280
         self.height = 720
+        # Defaults; overridden by GpuProfile when provided
         self.internal_w = 240
         self.internal_h = 180
+        self.particle_emit_scale = 0.55
         self._t0 = time.perf_counter()
         self._last_t = self._t0
         self._angle = 0.0
         self._auto_rotate = True
         self._ready = False
-        self.particles = ParticleSystem(400)
-        self._spectrum = np.zeros(band_count, dtype=np.float32)
-        self._analysis = AudioAnalysis()
+        particle_n = 400
         self.trail_decay = 0.78
         self.trail_scene_gain = 0.28
         self.trail_mix = 0.32
@@ -486,6 +486,21 @@ class VisualizerRenderer:
         self.crt_scanline = 0.92
         self.crt_vignette = 0.42
         self.exposure = 0.88
+        if profile is not None:
+            self.internal_w = int(getattr(profile, "internal_w", self.internal_w))
+            self.internal_h = int(getattr(profile, "internal_h", self.internal_h))
+            particle_n = int(getattr(profile, "particle_count", particle_n))
+            self.particle_emit_scale = float(getattr(profile, "particle_emit_scale", self.particle_emit_scale))
+            self.trail_decay = float(getattr(profile, "trail_decay", self.trail_decay))
+            self.trail_scene_gain = float(getattr(profile, "trail_scene_gain", self.trail_scene_gain))
+            self.trail_mix = float(getattr(profile, "trail_mix", self.trail_mix))
+            self.crt_barrel = float(getattr(profile, "crt_barrel", self.crt_barrel))
+            self.crt_scanline = float(getattr(profile, "crt_scanline", self.crt_scanline))
+            self.crt_vignette = float(getattr(profile, "crt_vignette", self.crt_vignette))
+            self.exposure = float(getattr(profile, "exposure", self.exposure))
+        self.particles = ParticleSystem(particle_n)
+        self._spectrum = np.zeros(band_count, dtype=np.float32)
+        self._analysis = AudioAnalysis()
         self._fbo_scene = 0
         self._tex_scene = 0
         self._rbo_depth = 0
@@ -666,7 +681,7 @@ class VisualizerRenderer:
             emit_n += int(8 + beat * 40)
         if a.treble > 0.35:
             emit_n += int(a.treble * 12)
-        emit_n = int(emit_n * 0.55)
+        emit_n = int(emit_n * float(getattr(self, "particle_emit_scale", 0.55)))
         if emit_n:
             self.particles.emit(emit_n, energy, beat)
         self.particles.update(dt)

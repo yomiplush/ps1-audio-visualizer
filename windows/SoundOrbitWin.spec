@@ -25,6 +25,7 @@ hiddenimports = [
     "sound_orbit_win.audio",
     "sound_orbit_win.renderer",
     "sound_orbit_win.math3d",
+    "sound_orbit_win.gpu",
     "cffi",
     "_cffi_backend",
 ]
