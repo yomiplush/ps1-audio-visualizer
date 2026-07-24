@@ -538,13 +538,13 @@ void main() {
     vec3 scene = texture(uScene, vUv).rgb;
     vec3 prev  = texture(uPrev, uvPrev).rgb;
 
-    // 画面全体を強く蓄積（CRT 蛍光体 + モーションの尾）
+    // 画面全体を軽く蓄積（視認性優先）
     float lum = dot(scene, vec3(0.299, 0.587, 0.114));
-    float hiBoost = 1.0 + smoothstep(0.15, 0.75, lum) * 0.55;
+    float hiBoost = 1.0 + smoothstep(0.20, 0.80, lum) * 0.25;
     vec3 col = prev * uDecay + scene * uSceneGain * hiBoost;
-    // クランプは弱め — 残像を長く・濃く残す
-    col = col / (1.0 + col * 0.12);
-    FragColor = vec4(clamp(col, 0.0, 1.6), 1.0);
+    // 蓄積しすぎないよう少し強めに圧縮
+    col = col / (1.0 + col * 0.45);
+    FragColor = vec4(clamp(col, 0.0, 1.2), 1.0);
 }
 """
 
@@ -567,7 +567,7 @@ uniform vec2  uResolution; // 出力解像度（スキャンライン密度用�
 uniform vec2  uInternal;   // 内部描画解像度（ジャギ用 UV 量子化）
 out vec4 FragColor;
 
-// ブラウン管の画面湾曲: 中心から外側へ UV を押し出し、四隅は枠外→黒
+// ブラウン管の画面湾曲: 中心から外側へ UV を押し出し、四隅は枠外→透過
 vec2 crtBarrel(vec2 uv, float amount) {
     if (amount < 1e-5) {
         return uv;
@@ -610,91 +610,96 @@ vec3 tonemap(vec3 x) {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
+// 256 色制限: 3-3-2 bit RGB（R8 × G8 × B4 = 256）
+// レトロ VGA / 8bit コンソール風のポスタリゼーション
+vec3 quantize256(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    float r = floor(c.r * 7.0 + 0.5) / 7.0;
+    float g = floor(c.g * 7.0 + 0.5) / 7.0;
+    float b = floor(c.b * 3.0 + 0.5) / 3.0;
+    return vec3(r, g, b);
+}
+
 void main() {
     // 1) ブラウン管の画面歪曲（四隅が外側へ曲がる）
     float barrel = uBarrel * (1.0 + uEnergy * 0.04 + uBeat * 0.03);
     vec2 uv = crtBarrel(vUv, barrel);
 
-    // 歪みで UV が枠外 → CRT の黒ベゼル
-    vec2 edge = smoothstep(vec2(0.0), vec2(0.012), uv)
-              * smoothstep(vec2(0.0), vec2(0.012), 1.0 - uv);
+    // 歪みで UV が枠外 → 透過ベゼル（不透明な黒帯にしない）
+    // やや広いソフトエッジでガラス縁のように溶ける
+    vec2 edge = smoothstep(vec2(-0.015), vec2(0.035), uv)
+              * smoothstep(vec2(-0.015), vec2(0.035), 1.0 - uv);
     float inScreen = edge.x * edge.y;
     if (inScreen < 1e-4) {
-        FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        FragColor = vec4(0.0); // 完全透過
         return;
     }
 
     // ジャギ強化: UV を内部解像度の格子にスナップ（階段状のピクセル）
+    // 枠外 UV は clamp してサンプリング（端色がにじむ）
     vec2 ires = max(uInternal, vec2(64.0, 48.0));
-    uv = (floor(uv * ires) + 0.5) / ires;
+    vec2 uvS = clamp(uv, 0.0, 1.0);
+    uvS = (floor(uvS * ires) + 0.5) / ires;
 
     // 色収差は控えめ（酔い・苦手な人向け）+ 端ほど少し強め
-    float edgeDist = length(uv - 0.5);
+    float edgeDist = length(uvS - 0.5);
     float aberr = uAberr * (1.0 + uEnergy * 0.22 + uBeat * 0.30);
     aberr *= 0.97 + 0.03 * sin(uTime * 5.5 + uBeat * 4.0);
     aberr *= 1.0 + edgeDist * 0.8;
-    // 収差もピクセル単位に量子化（にじみをブロック状に）
     if (aberr > 1e-6) {
         aberr = max(aberr, 1.0 / ires.x);
     }
 
-    vec3 scene = sampleSplit(uScene, uv, aberr);
-    vec3 trail = sampleSplit(uTrail, uv, aberr * 1.05);
+    vec3 scene = sampleSplit(uScene, uvS, aberr);
+    vec3 trail = sampleSplit(uTrail, uvS, aberr * 1.05);
 
-    // 画面全体の強い残像（CRT フォスファー）
-    trail *= vec3(0.80, 0.95, 1.08);
+    // 画面全体の残像（視認しやすい程度・控えめ）
+    trail *= vec3(0.82, 0.96, 1.05);
     float mixAmt = clamp(uTrailMix, 0.0, 1.0);
-    mixAmt *= 0.95 + uEnergy * 0.12 + uBeat * 0.10;
-    // 過去映像をかなり濃くミックス
-    vec3 col = mix(scene, trail, mixAmt * 0.88);
-    // 軌跡をさらに加算（回転の尾がはっきり）
-    vec3 ghost = max(trail - scene * 0.35, 0.0);
-    col += ghost * mixAmt * 0.70;
-    // 現在フレームを少し戻して「今」も見えるように
-    col = mix(col, max(col, scene), 0.22);
+    mixAmt *= 0.85 + uEnergy * 0.06 + uBeat * 0.05;
+    vec3 col = mix(scene, trail, mixAmt * 0.42);
+    vec3 ghost = max(trail - scene * 0.55, 0.0);
+    col += ghost * mixAmt * 0.28;
+    col = mix(col, max(col, scene), 0.45);
 
     col *= uExposure;
 
-    // 低ビット感（ジャギ・バンディング）
-    col = floor(col * 28.0 + 0.5) / 28.0;
-
-    // 2) スキャンライン — 画面全体にがっつり黒い横帯（少し透ける）
-    // 出力ピクセル基準なので端まで均一（歪み UV に依存しない）
+    // 2) スキャンライン
     float py = gl_FragCoord.y;
-    // 4px 周期: 2px 黒 + 2px 明 → 画面の半分が黒ライン
     float slot = mod(floor(py), 4.0);
-    float mask = 1.0 - step(2.0, slot); // 0,1 行 = 黒 / 2,3 行 = 明
-    // 黒帯の縁を 1px だけ少しソフトに（ジャギを抑える）
-    float edge = abs(mod(py, 4.0) - 1.5);
-    float softMask = mix(mask, mask * 0.85, smoothstep(0.5, 1.5, edge));
-    // uScanline=1 → 黒帯は約 6% だけ残す（ほぼ黒・わずかに透ける）
+    float mask = 1.0 - step(2.0, slot);
+    float scanEdge = abs(mod(py, 4.0) - 1.5);
+    float softMask = mix(mask, mask * 0.85, smoothstep(0.5, 1.5, scanEdge));
     float s = clamp(uScanline, 0.0, 1.0);
     float darkKeep = mix(1.0, 0.06, s);
     col *= mix(1.0, darkKeep, softMask);
-    // 明行はほぼそのまま（縞が黒として浮かぶように）
-    // ごく薄い走査の揺らぎ
     float roll = 0.98 + 0.02 * sin(py * 0.35 - uTime * 1.6 + uBeat * 2.0);
     col *= roll;
 
-    // 3) 四隅・外周のビネット（ブラウン管の影）
-    vec2 vc = uv * 2.0 - 1.0;
-    // 角を強く落とす（円形 + 角寄り）
+    // 3) 四隅は「黒く塗る」より「アルファで抜く」（透過ベゼル）
+    vec2 vc = uvS * 2.0 - 1.0;
     float r = length(vc);
-    float soft = smoothstep(0.55, 1.18, r);
-    // 角だけさらに落とす（|x|+|y| 系）
-    float corner = pow(max(abs(vc.x), abs(vc.y)), 2.4);
-    corner = smoothstep(0.55, 1.05, corner);
-    float vig = 1.0 - uVignette * (soft * 0.72 + corner * 0.55);
-    vig = clamp(vig, 0.0, 1.0);
-    col *= vig;
+    float soft = smoothstep(0.82, 1.28, r);
+    float corner = pow(max(abs(vc.x), abs(vc.y)), 3.0);
+    corner = smoothstep(0.78, 1.12, corner);
+    float vigShape = clamp(soft * 0.55 + corner * 0.45, 0.0, 1.0);
+    // RGB はほぼ落とさず、透明度で外周を消す
+    float vigA = 1.0 - uVignette * vigShape * 0.92;
+    float vigRgb = 1.0 - uVignette * vigShape * 0.12;
+    col *= vigRgb;
 
-    // 端の薄いフォールオフ（ベゼルへなじませる）
-    col *= mix(0.0, 1.0, inScreen);
+    // 端のソフトフォールオフ → アルファ
+    float frameA = smoothstep(0.0, 0.12, inScreen);
+    float alpha = clamp(frameA * vigA, 0.0, 1.0);
+
     // CRT ガラスのわずかな周辺緑寄り（ごく薄く）
-    col *= mix(vec3(1.0), vec3(0.92, 1.0, 0.95), edgeDist * 0.12 * uVignette);
+    col *= mix(vec3(1.0), vec3(0.92, 1.0, 0.95), edgeDist * 0.10 * uVignette);
 
     col = tonemap(col);
-    FragColor = vec4(col, 1.0);
+    // 256 色パレット（3-3-2）で発色を制限
+    col = quantize256(col);
+    // プレマルチプライド（コンポジタ越しの縁がきれい）
+    FragColor = vec4(col * alpha, alpha);
 }
 """
 
@@ -1158,10 +1163,10 @@ class VisualizerRenderer:
             except ValueError:
                 return default
 
-        # 強めの既定（長い尾 + 濃いブレンド）
-        self.trail_decay = float(np.clip(_f("SOUNDORBIT_TRAIL_DECAY", 0.93), 0.5, 0.97))
-        self.trail_scene_gain = float(np.clip(_f("SOUNDORBIT_TRAIL_GAIN", 0.52), 0.1, 0.85))
-        self.trail_mix = float(np.clip(_f("SOUNDORBIT_TRAIL_MIX", 0.78), 0.0, 0.95))
+        # 視認しやすい控えめ残像
+        self.trail_decay = float(np.clip(_f("SOUNDORBIT_TRAIL_DECAY", 0.78), 0.5, 0.97))
+        self.trail_scene_gain = float(np.clip(_f("SOUNDORBIT_TRAIL_GAIN", 0.28), 0.1, 0.85))
+        self.trail_mix = float(np.clip(_f("SOUNDORBIT_TRAIL_MIX", 0.32), 0.0, 0.95))
 
     def _apply_crt_from_env(self) -> None:
         """
@@ -1186,11 +1191,12 @@ class VisualizerRenderer:
             except ValueError:
                 return default
 
-        # 四隅が曲がる感じ / 横縞 / 四隅の黒さ
-        self.crt_barrel = float(np.clip(_f("SOUNDORBIT_CRT_BARREL", 0.16), 0.0, 0.45))
-        # 既定: 画面全体にほぼ黒の横帯（わずかに透ける）
+        # 歪み・黒枠は控えめ（映像エリアを広く）
+        # 歪みは弱め（枠外は黒ではなく透過）
+        self.crt_barrel = float(np.clip(_f("SOUNDORBIT_CRT_BARREL", 0.09), 0.0, 0.45))
         self.crt_scanline = float(np.clip(_f("SOUNDORBIT_CRT_SCANLINE", 0.92), 0.0, 1.0))
-        self.crt_vignette = float(np.clip(_f("SOUNDORBIT_CRT_VIGNETTE", 0.62), 0.0, 1.0))
+        # 角の透過ベゼル強度
+        self.crt_vignette = float(np.clip(_f("SOUNDORBIT_CRT_VIGNETTE", 0.42), 0.0, 1.0))
 
     def apply_resource_state(
         self,
@@ -1701,8 +1707,8 @@ class VisualizerRenderer:
 
         # 緑外枠・数値パネルは中心軸まわりに回転（音で少し加速）
         self._frame_angle += dt * (0.22 + energy * 0.15 + beat * 0.35)
-        # AUDIO VISUALIZER だけ別軸・弱めの回転（斜め帯は固定チルト + ゆるい公転）
-        self._label_angle += dt * (0.07 + energy * 0.04 + beat * 0.06)
+        # AUDIO VISUALIZER は外枠と逆回転（弱めの公転）
+        self._label_angle -= dt * (0.07 + energy * 0.04 + beat * 0.06)
 
         # パーティクル（品質 + ランタイムスロットルで発生量を抑制）
         emit_n = 0
@@ -1740,15 +1746,19 @@ class VisualizerRenderer:
         vp = mul(proj, view)
 
         # Gtk.GLArea がバインドしている FB を保持（最終合成先）
-        # Wayland / EGL では FBO 0 が incomplete なので絶対に 0 へは戻さない
-        bound = self._current_draw_fbo()
-        ours = {self._fbo_scene, self._fbo_trail[0], self._fbo_trail[1], 0}
-        if bound not in ours:
+        # Wayland / EGL では FBO 0 が incomplete なので、非ゼロの GTK FBO を覚える。
+        # render シグナル中は通常すでに正しい FBO が bind されている。
+        bound = int(self._current_draw_fbo())
+        offscreen = {
+            int(self._fbo_scene or 0),
+            int(self._fbo_trail[0] or 0),
+            int(self._fbo_trail[1] or 0),
+        }
+        if bound > 0 and bound not in offscreen:
             self._gtk_fbo = bound
-        prev_fbo = self._gtk_fbo if self._gtk_fbo > 0 else bound
-        if prev_fbo in ours:
-            # 最終出力先が不明なときはオフスクリーン結果を読めないので描画を諦める
-            # （通常は resize 復元後にここへ来ない）
+        prev_fbo = int(self._gtk_fbo) if self._gtk_fbo > 0 else bound
+        # オフスクリーンに「最終出力」してしまうのを防ぐ。0 は Wayland では incomplete。
+        if prev_fbo <= 0 or prev_fbo in offscreen:
             return False
 
         # ---- 1) シーンをオフスクリーンへ ----
@@ -1971,10 +1981,10 @@ class VisualizerRenderer:
         if use_trails:
             src = self._trail_idx
             dst = 1 - src
-            # 強めの持続（カメラ回転で太い尾が画面全体に残る）
-            decay = float(np.clip(self.trail_decay + energy * 0.01 + beat * 0.015, 0.82, 0.96))
-            scene_gain = float(np.clip(self.trail_scene_gain + beat * 0.05, 0.35, 0.72))
-            zoom = float(self.trail_zoom - beat * 0.0010 - energy * 0.0005)
+            # 控えめな持続（尾は見えるが主役は現在画）
+            decay = float(np.clip(self.trail_decay + energy * 0.008 + beat * 0.01, 0.65, 0.88))
+            scene_gain = float(np.clip(self.trail_scene_gain + beat * 0.03, 0.18, 0.40))
+            zoom = float(self.trail_zoom - beat * 0.0006 - energy * 0.0003)
 
             glBindFramebuffer(GL_FRAMEBUFFER, self._fbo_trail[dst])
             glViewport(0, 0, self._fbo_w, self._fbo_h)
@@ -1992,7 +2002,7 @@ class VisualizerRenderer:
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
             self._trail_idx = dst
             trail_tex = self._tex_trail[self._trail_idx]
-            trail_mix = float(np.clip(self.trail_mix + energy * 0.04 + beat * 0.05, 0.55, 0.92))
+            trail_mix = float(np.clip(self.trail_mix + energy * 0.03 + beat * 0.03, 0.18, 0.48))
         else:
             trail_tex = self._tex_scene
             trail_mix = 0.0
@@ -2003,7 +2013,10 @@ class VisualizerRenderer:
         glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo)
         glViewport(0, 0, self.width, self.height)
         glDisable(GL_DEPTH_TEST)
+        # 端の透過ベゼル: クリアを透明に、ポストはアルファ書き込み
         glDisable(GL_BLEND)
+        glClearColor(0.0, 0.0, 0.0, 0.0)
+        glClear(GL_COLOR_BUFFER_BIT)
         glUseProgram(self.prog_post)
         glUniform1f(glGetUniformLocation(self.prog_post, "uAberr"), aberr)
         glUniform1f(glGetUniformLocation(self.prog_post, "uTrailMix"), trail_mix)

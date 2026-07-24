@@ -37,6 +37,7 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         self._base_fps = max(18, int(self._quality.target_fps))
         self._tick_interval_ms = max(12, int(round(1000.0 / self._base_fps)))
         self._res_status_counter = 0
+        self._hint_visible = True  # H キーでトグル
 
         # ルート: オーバーレイ（GL + ヒント）
         self._overlay = Gtk.Overlay()
@@ -47,6 +48,12 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         self._gl.set_vexpand(True)
         self._gl.set_required_version(3, 3)
         self._gl.set_has_depth_buffer(True)
+        # CRT 外周ベゼルをデスクトップへ透過させる
+        if hasattr(self._gl, "set_has_alpha"):
+            try:
+                self._gl.set_has_alpha(True)
+            except Exception:
+                pass
         self._gl.set_auto_render(False)
         self._gl.set_focusable(True)
         # Prefer desktop GL; allow GLES as fallback when API exists (GTK 4.12+)
@@ -85,7 +92,7 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         )
         subtitle.add_css_class("dim-label")
         keys = Gtk.Label(
-            label="Esc 終了  ·  F11 全画面  ·  Space 回転ON/OFF  ·  H ヘルプ"
+            label="Esc 終了  ·  F11 全画面  ·  Space 回転ON/OFF  ·  H ヘルプ表示/非表示"
         )
         keys.add_css_class("osd-keys")
 
@@ -108,9 +115,15 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         css = Gtk.CssProvider()
         css.load_from_data(
             b"""
+            window, .background {
+                background-color: transparent;
+            }
             .osd-title { color: alpha(white, 0.92); text-shadow: 0 2px 12px alpha(black, 0.7); }
             .osd-keys { color: alpha(white, 0.75); margin-top: 8px; font-size: 0.95em; }
-            .osd { padding: 12px 20px; }
+            .osd {
+                padding: 12px 20px;
+                background-color: transparent;
+            }
             """
         )
         Gtk.StyleContext.add_provider_for_display(
@@ -124,9 +137,9 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         key_ctrl.connect("key-pressed", self._on_key)
         self.add_controller(key_ctrl)
 
-        # クリックでヘルプ再表示
+        # クリックでもヘルプ表示トグル
         click = Gtk.GestureClick()
-        click.connect("pressed", lambda *_: self._show_hint(temporary=True))
+        click.connect("pressed", lambda *_: self._toggle_hint())
         self._gl.add_controller(click)
 
         self.connect("close-request", self._on_close)
@@ -143,6 +156,7 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         return GLib.SOURCE_REMOVE
 
     def _show_hint(self, temporary: bool = True) -> None:
+        self._hint_visible = True
         self._hint.set_opacity(1.0)
         self._hint.set_visible(True)
         if self._overlay_hide_id:
@@ -152,10 +166,22 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
             self._overlay_hide_id = GLib.timeout_add(4500, self._hide_hint)
 
     def _hide_hint(self) -> bool:
+        self._hint_visible = False
         self._hint.set_opacity(0.0)
-        # 完全に消さず透明に（再表示しやすい）
+        self._hint.set_visible(False)
         self._overlay_hide_id = 0
         return GLib.SOURCE_REMOVE
+
+    def _toggle_hint(self) -> None:
+        """H キー / クリック: 表示⇔非表示。"""
+        if self._overlay_hide_id:
+            GLib.source_remove(self._overlay_hide_id)
+            self._overlay_hide_id = 0
+        if self._hint_visible and self._hint.get_opacity() > 0.05:
+            self._hide_hint()
+        else:
+            # 手動表示は自動で消さない
+            self._show_hint(temporary=False)
 
     def _show_gl_failure(self, message: str) -> None:
         hints = gl_failure_hints(self._gpu)
@@ -318,7 +344,7 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
             self._renderer.toggle_rotation()
             return True
         if keyval in (Gdk.KEY_h, Gdk.KEY_H, Gdk.KEY_F1):
-            self._show_hint(temporary=True)
+            self._toggle_hint()
             return True
         if keyval in (Gdk.KEY_f, Gdk.KEY_F):
             if self.is_fullscreen():
