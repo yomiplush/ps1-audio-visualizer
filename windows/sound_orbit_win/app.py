@@ -293,6 +293,13 @@ def run() -> int:
                 w, h = glfw.get_framebuffer_size(window)
                 w = max(1, min(int(w), 3840))
                 h = max(1, min(int(h), 2160))
+                try:
+                    cx, cy = glfw.get_cursor_pos(window)
+                    ww, wh = glfw.get_window_size(window)
+                    if ww > 0 and wh > 0:
+                        renderer.set_pointer(cx / float(ww), cy / float(wh))
+                except Exception:
+                    pass
                 renderer.resize(w, h)
                 snap = audio.snapshot()
                 renderer.set_analysis(snap)

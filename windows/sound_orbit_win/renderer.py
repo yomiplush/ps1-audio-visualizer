@@ -146,23 +146,16 @@ void main(){
 }
 """
 
-# Sega Saturn mesh transparency + chroma boost (shared with Linux look)
-_GLSL_SATURN_MESH = """
+# PS1 helpers (no Saturn mesh stipple)
+_GLSL_COMMON = """
 vec3 boostSat(vec3 c, float amt) {
     float l = dot(c, vec3(0.299, 0.587, 0.114));
     return clamp(mix(vec3(l), c, 1.0 + amt), 0.0, 1.35);
 }
-bool saturnMeshKill(float alpha) {
-    if (alpha >= 0.97) return false;
-    if (alpha < 0.02) return true;
-    ivec2 ip = ivec2(floor(gl_FragCoord.xy));
-    int cell = (ip.x & 1) | ((ip.y & 1) << 1);
-    float thresh = clamp(alpha, 0.0, 1.0) * 4.0;
-    return (float(cell) + 0.5) > thresh;
-}
-float saturnMeshAlpha(float alpha) {
-    if (saturnMeshKill(alpha)) discard;
-    return alpha >= 0.97 ? alpha : 1.0;
+// Hard alpha cut / chunky alpha steps — not mesh dots
+float ps1Alpha(float a) {
+    if (a < 0.04) discard;
+    return floor(clamp(a, 0.0, 1.0) * 4.0 + 0.5) / 4.0;
 }
 """
 
@@ -171,13 +164,14 @@ BAR_FRAG = """
 in vec3 vNormal; in vec3 vWorldPos; in float vHeight; in float vBand;
 uniform vec3 uCamPos; uniform float uBands; uniform float uBeat;
 out vec4 FragColor;
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 vec3 palette(float t){
-    vec3 a=vec3(0.02,0.55,1.00), b=vec3(0.95,0.08,0.98), c=vec3(1.00,0.42,0.02);
+    // PS1 muted cyan→magenta→amber
+    vec3 a=vec3(0.18,0.42,0.72), b=vec3(0.72,0.22,0.68), c=vec3(0.82,0.48,0.22);
     float s=smoothstep(0.0,1.0,t);
     vec3 col=mix(a,b,smoothstep(0.0,0.55,s));
     col=mix(col,c,smoothstep(0.45,1.0,s));
-    return boostSat(col,0.42);
+    return boostSat(col,-0.08);
 }
 void main(){
     vec3 N=normalize(vNormal);
@@ -190,13 +184,13 @@ void main(){
     float hNorm=clamp(vHeight/4.5,0.0,1.0);
     float body=0.28+diff*0.55+hNorm*0.18+uBeat*0.06;
     vec3 col=base*body;
-    col+=base*rim*0.28;
+    col+=base*rim*0.22;
     float top=smoothstep(0.78,1.0,vWorldPos.y/max(vHeight,0.01));
-    col+=base*top*0.18;
-    col=boostSat(col,0.18);
+    col+=base*top*0.14;
+    col=boostSat(col,-0.06);
     float peak=max(col.r,max(col.g,col.b));
     if(peak>0.95) col*=0.95/peak;
-    float a=saturnMeshAlpha(0.90+rim*0.06);
+    float a=ps1Alpha(0.90+rim*0.06);
     FragColor=vec4(col,a);
 }
 """
@@ -222,7 +216,7 @@ in vec3 vNormal; in vec3 vWorldPos; in vec3 vLocal;
 uniform vec3 uCamPos; uniform float uBass; uniform float uMid; uniform float uTreble;
 uniform float uBeat; uniform float uTime;
 out vec4 FragColor;
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 void main(){
     vec3 N=normalize(vNormal); vec3 V=normalize(uCamPos-vWorldPos);
     float fres=pow(1.0-max(dot(N,V),0.0),2.2);
@@ -231,8 +225,8 @@ void main(){
     float bands=abs(sin(vLocal.y*12.0+uTime*4.0+uBeat*3.0));
     base+=vec3(0.15,0.70,1.0)*bands*0.18*uTreble;
     vec3 col=base*(0.35+fres*1.2)+base*fres*0.45*(0.4+uBeat);
-    col=boostSat(col,0.40);
-    FragColor=vec4(col,saturnMeshAlpha(0.92));
+    col=boostSat(col,-0.08);
+    FragColor=vec4(col,ps1Alpha(0.92));
 }
 """
 
@@ -255,7 +249,7 @@ void main(){
 RING_FRAG = """
 #version 330 core
 in float vAlpha; in float vT; uniform float uHue; out vec4 FragColor;
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 vec3 hsv2rgb(vec3 c){
     vec3 p=abs(fract(c.xxx+vec3(0.,2./3.,1./3.))*6.-3.);
     return c.z*mix(vec3(1.),clamp(p-1.,0.,1.),c.y);
@@ -263,8 +257,8 @@ vec3 hsv2rgb(vec3 c){
 void main(){
     float edge=smoothstep(0.0,0.15,vT)*smoothstep(1.0,0.85,vT);
     float dash=0.65+0.35*smoothstep(0.2,0.5,abs(sin(vT*3.14159265*48.0)));
-    vec3 col=boostSat(hsv2rgb(vec3(fract(uHue+vT*0.15),0.98,1.0)),0.25);
-    float a=saturnMeshAlpha(vAlpha*dash*(0.7+0.3*edge));
+    vec3 col=boostSat(hsv2rgb(vec3(fract(uHue+vT*0.15),0.72,0.92)),-0.10);
+    float a=ps1Alpha(vAlpha*dash*(0.7+0.3*edge));
     FragColor=vec4(col,a);
 }
 """
@@ -289,12 +283,12 @@ FRAME_FRAG = """
 in float vT; in float vPulse;
 uniform vec3 uColor; uniform float uAlpha; uniform float uBeat;
 out vec4 FragColor;
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 void main(){
     float dash=0.6+0.4*smoothstep(0.12,0.4,abs(sin(vT*3.14159265*40.0)));
     float a=clamp(uAlpha*vPulse*dash*(0.9+uBeat*0.25),0.0,1.0);
-    vec3 col=boostSat(uColor,0.40)*(0.85+vPulse*0.4+uBeat*0.2);
-    FragColor=vec4(col,saturnMeshAlpha(a));
+    vec3 col=boostSat(uColor,-0.05)*(0.85+vPulse*0.35+uBeat*0.15);
+    FragColor=vec4(col,ps1Alpha(a));
 }
 """
 
@@ -313,23 +307,19 @@ void main(){
 
 LABEL_FRAG = """
 #version 330 core
-// Premultiplied RGBA + Saturn mesh on soft edges
+// Premultiplied RGBA — PS1 hard alpha, no mesh stipple
 in vec2 vUv;
 uniform sampler2D uTex;
 uniform float uAlpha; uniform float uBeat; uniform float uEnergy;
 out vec4 FragColor;
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 void main(){
     vec4 t=texture(uTex,vUv);
     float vFade=smoothstep(0.0,0.12,vUv.y)*smoothstep(1.0,0.88,vUv.y);
-    float a=t.a*uAlpha*vFade;
-    if(a<0.02) discard;
+    float a=ps1Alpha(t.a*uAlpha*vFade);
     float glow=0.90+uEnergy*0.18+uBeat*0.22;
-    vec3 rgb=boostSat(t.rgb,0.28)*glow*uAlpha*vFade;
-    if(a<0.92 && saturnMeshKill(a)) discard;
-    float outA=a>=0.92?a:1.0;
-    if(a<0.92) rgb=(rgb/max(a,0.001))*outA;
-    FragColor=vec4(rgb,outA);
+    vec3 rgb=boostSat(t.rgb,-0.06)*glow*uAlpha*vFade;
+    FragColor=vec4(rgb,a);
 }
 """
 
@@ -350,16 +340,16 @@ GRID_FRAG = """
 #version 330 core
 in float vDist; uniform float uEnergy; uniform float uBeat;
 out vec4 FragColor;
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 void main(){
     float fade=1.0-smoothstep(1.5,13.0,vDist);
-    vec3 blue=vec3(0.05,0.55,1.0);
-    vec3 cyan=vec3(0.10,0.95,1.0);
-    vec3 col=boostSat(mix(blue,cyan,clamp(uEnergy*0.55+uBeat*0.25,0.0,1.0)),0.45);
-    float core=1.0-smoothstep(0.0,6.0,vDist);
-    float a=(0.22+uEnergy*0.28+uBeat*0.12+core*0.18)*fade;
-    col*=0.85+core*0.45+uEnergy*0.25;
-    FragColor=vec4(col,saturnMeshAlpha(clamp(a,0.0,0.95)));
+    vec3 blue=vec3(0.14,0.32,0.52);
+    vec3 cyan=vec3(0.18,0.48,0.58);
+    vec3 col=boostSat(mix(blue,cyan,clamp(uEnergy*0.45+uBeat*0.20,0.0,1.0)),-0.10);
+    float core=1.0-smoothstep(0.0,4.5,vDist);
+    float a=(0.10+uEnergy*0.18+uBeat*0.08+core*0.22)*fade*(0.35+core*0.65);
+    col*=0.55+core*0.55+uEnergy*0.15;
+    FragColor=vec4(col,ps1Alpha(clamp(a,0.0,0.85)));
 }
 """
 
@@ -373,30 +363,28 @@ BG_FRAG = """
 #version 330 core
 in vec2 vUv; uniform float uTime; uniform float uEnergy; uniform float uBeat;
 out vec4 FragColor;
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 void main(){
     vec2 p=vUv-0.5; float r=length(p);
-    vec3 c0=vec3(0.010,0.012,0.045);
-    vec3 c1=vec3(0.05,0.008,0.12);
-    vec3 c2=vec3(0.0,0.06,0.10);
-    vec3 col=mix(c0,c1,smoothstep(0.0,0.85,r));
-    col=mix(col,c2,0.25+0.18*sin(uTime*0.28));
-    float yBand=exp(-pow(p.y/(0.09+uEnergy*0.04+uBeat*0.03),2.0));
-    float xFall=1.0-smoothstep(0.05,0.72,abs(p.x));
-    float xGrad=p.x*0.5+0.5;
-    vec3 cyanA=vec3(0.05,0.70,1.00);
-    vec3 cyanB=vec3(0.15,0.35,1.00);
-    vec3 cyanC=vec3(0.10,0.95,0.75);
-    vec3 hCol=mix(cyanB,cyanA,smoothstep(0.0,0.55,xGrad));
-    hCol=mix(hCol,cyanC,smoothstep(0.45,1.0,xGrad));
-    hCol=boostSat(hCol,0.35);
-    float pulse=0.10+uEnergy*0.22+uBeat*0.18;
-    float wave=0.88+0.12*sin(p.x*10.0-uTime*1.4+uBeat*2.0);
-    col+=hCol*yBand*xFall*pulse*wave;
-    float core=exp(-r*r*7.5)*(0.05+uEnergy*0.12+uBeat*0.08);
-    col+=vec3(0.10,0.55,1.00)*core;
-    col+=vec3(0.55,0.05,0.65)*uBeat*0.06*(yBand*0.5+(1.0-r)*0.3);
-    col=boostSat(col,0.22);
+    // outer black, blue only near center
+    vec3 black=vec3(0.004,0.005,0.010);
+    vec3 mid=vec3(0.012,0.018,0.040);
+    vec3 coreBlue=vec3(0.04,0.10,0.22);
+    float coreMask=exp(-r*r*14.0);
+    float midMask=exp(-r*r*5.5);
+    vec3 col=black;
+    col=mix(col,mid,midMask*0.85);
+    col=mix(col,coreBlue,coreMask*(0.55+uEnergy*0.25));
+    float yBand=exp(-pow(p.y/(0.055+uEnergy*0.025+uBeat*0.02),2.0));
+    float xFall=1.0-smoothstep(0.02,0.42,abs(p.x));
+    vec3 hCol=vec3(0.12,0.32,0.55);
+    float pulse=0.06+uEnergy*0.14+uBeat*0.10;
+    float wave=0.90+0.10*sin(p.x*10.0-uTime*1.4+uBeat*2.0);
+    col+=hCol*yBand*xFall*pulse*wave*coreMask;
+    col+=vec3(0.08,0.22,0.40)*coreMask*(0.04+uEnergy*0.10+uBeat*0.06);
+    col+=vec3(0.25,0.06,0.28)*uBeat*0.03*coreMask;
+    col*=mix(0.15,1.0,midMask);
+    col=boostSat(col,-0.12);
     FragColor=vec4(col,1.0);
 }
 """
@@ -415,7 +403,7 @@ void main(){
 PART_FRAG = """
 #version 330 core
 in float vLife; in float vHue; out vec4 FragColor;
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 vec3 hsv2rgb(vec3 c){
     vec3 p=abs(fract(c.xxx+vec3(0.,2./3.,1./3.))*6.-3.);
     return c.z*mix(vec3(1.),clamp(p-1.,0.,1.),c.y);
@@ -423,8 +411,8 @@ vec3 hsv2rgb(vec3 c){
 void main(){
     vec2 p=gl_PointCoord*2.-1.; float d=dot(p,p);
     if(d>1.) discard;
-    vec3 col=boostSat(hsv2rgb(vec3(fract(vHue),0.95,1.)),0.30);
-    FragColor=vec4(col,saturnMeshAlpha(exp(-d*3.2)*vLife*0.9));
+    vec3 col=boostSat(hsv2rgb(vec3(fract(vHue),0.70,0.92)),-0.08);
+    FragColor=vec4(col,ps1Alpha(exp(-d*3.2)*vLife*0.9));
 }
 """
 
@@ -492,28 +480,29 @@ vec3 tonemap(vec3 x){
     return clamp((x*(a*x+b))/(x*(c*x+d)+e),0.0,1.0);
 }
 
-vec3 quantize256(vec3 c){
+vec3 quantizePS1(vec3 c){
     c=clamp(c,0.0,1.0);
-    return vec3(floor(c.r*7.0+0.5)/7.0, floor(c.g*7.0+0.5)/7.0, floor(c.b*3.0+0.5)/3.0);
+    return vec3(floor(c.r*5.0+0.5)/5.0, floor(c.g*5.0+0.5)/5.0, floor(c.b*5.0+0.5)/5.0);
 }
 
 vec3 boostSat(vec3 c, float amt){
     float l=dot(c,vec3(0.299,0.587,0.114));
     return clamp(mix(vec3(l),c,1.0+amt),0.0,1.0);
 }
-bool saturnMeshKill(float alpha){
-    if(alpha>=0.97) return false;
-    if(alpha<0.02) return true;
-    ivec2 ip=ivec2(floor(gl_FragCoord.xy));
-    int cell=(ip.x&1)|((ip.y&1)<<1);
-    return (float(cell)+0.5)>clamp(alpha,0.0,1.0)*4.0;
+float bayer2(vec2 p){
+    int x=int(mod(floor(p.x),2.0));
+    int y=int(mod(floor(p.y),2.0));
+    int i=x+y*2;
+    float m[4]; m[0]=0.0; m[1]=0.5; m[2]=0.75; m[3]=0.25;
+    return m[i];
 }
 
 void main(){
     float barrel=uBarrel*(1.0+uEnergy*0.04+uBeat*0.03);
     vec2 uv=crtBarrel(vUv,barrel);
-    vec2 edge=smoothstep(vec2(-0.015),vec2(0.035),uv)
-             *smoothstep(vec2(-0.015),vec2(0.035),1.0-uv);
+    // smaller CRT corners / thinner bezel
+    vec2 edge=smoothstep(vec2(-0.008),vec2(0.018),uv)
+             *smoothstep(vec2(-0.008),vec2(0.018),1.0-uv);
     float inScreen=edge.x*edge.y;
     if(inScreen<1e-4){ FragColor=vec4(0.0,0.0,0.0,1.0); return; }
 
@@ -522,18 +511,18 @@ void main(){
     uvS=(floor(uvS*ires)+0.5)/ires;
 
     float edgeDist=length(uvS-0.5);
-    float aberr=uAberr*(1.0+uEnergy*0.22+uBeat*0.30);
-    aberr*=0.97+0.03*sin(uTime*5.5+uBeat*4.0);
-    aberr*=1.0+edgeDist*0.8;
-    if(aberr>1e-6) aberr=max(aberr,1.0/ires.x);
+    float aberr=max(uAberr,0.00055)*(1.0+uEnergy*0.12+uBeat*0.10);
+    aberr*=0.98+0.02*sin(uTime*4.0);
+    aberr*=1.0+edgeDist*0.55;
+    aberr=max(aberr,0.75/ires.x);
 
     vec3 scene=sampleSplit(uScene,uvS,aberr);
-    vec3 trail=sampleSplit(uTrail,uvS,aberr*1.05);
-    trail*=vec3(0.82,0.96,1.05);
-    float mixAmt=clamp(uTrailMix,0.0,1.0)*(0.85+uEnergy*0.06+uBeat*0.05);
-    vec3 col=mix(scene,trail,mixAmt*0.42);
-    col+=max(trail-scene*0.55,0.0)*mixAmt*0.28;
-    col=mix(col,max(col,scene),0.45);
+    vec3 trail=sampleSplit(uTrail,uvS,aberr*1.08);
+    trail*=vec3(0.78,0.94,1.02);
+    float mixAmt=clamp(uTrailMix,0.0,1.0)*(0.92+uEnergy*0.08+uBeat*0.06);
+    vec3 col=mix(scene,trail,mixAmt*0.52);
+    col+=max(trail-scene*0.48,0.0)*mixAmt*0.36;
+    col=mix(col,max(col,scene),0.38);
     col*=uExposure;
 
     float py=gl_FragCoord.y;
@@ -542,33 +531,27 @@ void main(){
     float scanEdge=abs(mod(py,4.0)-1.5);
     float softMask=mix(mask,mask*0.85,smoothstep(0.5,1.5,scanEdge));
     float s=clamp(uScanline,0.0,1.0);
-    // Hard CRT scanlines (very visible on Windows window framebuffer)
-    col*=mix(1.0,mix(1.0,0.02,s),softMask);
+    col*=mix(1.0,mix(1.0,0.04,s),softMask);
     col*=0.97+0.03*sin(py*0.35-uTime*1.6+uBeat*2.0);
-    // Extra phosphor strip every other line
-    col*=mix(1.0,0.88,step(1.0,mod(floor(py),2.0))*s*0.5);
+    col*=mix(1.0,0.90,step(1.0,mod(floor(py),2.0))*s*0.45);
 
+    // vignette only near true corners (smaller black corners)
     vec2 vc=uvS*2.0-1.0;
-    float soft=smoothstep(0.82,1.28,length(vc));
-    float corner=pow(max(abs(vc.x),abs(vc.y)),3.0);
-    corner=smoothstep(0.78,1.12,corner);
-    float vigShape=clamp(soft*0.55+corner*0.45,0.0,1.0);
-    col*=1.0-uVignette*vigShape*0.12;
-    float frameA=smoothstep(0.0,0.12,inScreen);
+    float soft=smoothstep(0.92,1.22,length(vc));
+    float corner=pow(max(abs(vc.x),abs(vc.y)),4.0);
+    corner=smoothstep(0.88,1.08,corner);
+    float vigShape=clamp(soft*0.40+corner*0.60,0.0,1.0);
+    col*=1.0-uVignette*vigShape*0.10;
+    float frameA=smoothstep(0.0,0.08,inScreen);
     float vigA=1.0-uVignette*vigShape*0.55;
     float alpha=clamp(frameA*vigA,0.0,1.0);
-    col*=mix(vec3(1.0),vec3(0.92,1.0,0.95),edgeDist*0.10*uVignette);
+    col*=mix(vec3(1.0),vec3(0.94,0.98,0.96),edgeDist*0.06*uVignette);
 
     col=tonemap(col);
-    col=boostSat(col,0.32);
-    col=quantize256(col);
-    // Saturn mesh on CRT bezel fade (Windows window is opaque; dots still read as mesh)
-    if(alpha<0.97 && saturnMeshKill(alpha)){
-        FragColor=vec4(0.0,0.0,0.0,1.0);
-        return;
-    }
-    float outA=alpha>=0.97?1.0:1.0;
-    FragColor=vec4(col*outA,1.0);
+    col=boostSat(col,-0.14); // PS1 muted chroma
+    float dith=(bayer2(gl_FragCoord.xy)-0.5)*(1.0/5.0);
+    col=quantizePS1(col+dith); // jagged banding, not mesh transparency
+    FragColor=vec4(col,1.0);
 }
 """
 
@@ -1031,8 +1014,8 @@ class VisualizerRenderer:
         self.bands = band_count
         self.width = 1280
         self.height = 720
-        self.internal_w = 240
-        self.internal_h = 180
+        self.internal_w = 200
+        self.internal_h = 150
         self.particle_emit_scale = 0.55
         self.orb_stacks = 16
         self.orb_slices = 22
@@ -1046,17 +1029,21 @@ class VisualizerRenderer:
         self._frame_angle = 0.0
         self._label_angle = 0.0
         self._auto_rotate = True
+        self._mouse_nx = 0.5
+        self._mouse_ny = 0.5
+        self._cam_h_bias = 0.0
+        self._pointer_active = False
         self._ready = False
         particle_n = 400
-        # Strong CRT defaults (must be obvious on Windows)
-        self.trail_decay = 0.82
-        self.trail_scene_gain = 0.36
-        self.trail_mix = 0.42
-        self.trail_zoom = 0.997
-        self.aberration = 0.0014
-        self.crt_barrel = 0.11
-        self.crt_scanline = 0.98
-        self.crt_vignette = 0.48
+        # PS1 CRT defaults: muted chroma, subtle trails + CA, smaller corners
+        self.trail_decay = 0.86
+        self.trail_scene_gain = 0.40
+        self.trail_mix = 0.52
+        self.trail_zoom = 0.9975
+        self.aberration = 0.00075
+        self.crt_barrel = 0.08
+        self.crt_scanline = 0.92
+        self.crt_vignette = 0.38
         self.exposure = 0.90
         self.enable_trails = True
         self.frame_radius = 3.85
@@ -1462,6 +1449,12 @@ class VisualizerRenderer:
     def toggle_rotation(self) -> None:
         self._auto_rotate = not self._auto_rotate
 
+    def set_pointer(self, nx: float, ny: float) -> None:
+        """Window-normalized pointer (0..1). Camera slowly follows."""
+        self._mouse_nx = float(np.clip(nx, 0.0, 1.0))
+        self._mouse_ny = float(np.clip(ny, 0.0, 1.0))
+        self._pointer_active = True
+
     def _upload_param(self, index: int, label: str, value: float) -> None:
         txt = f"{value:.3f}" if label == "PEAK" else f"{value:.2f}"
         key = f"{label}|{txt}"
@@ -1536,8 +1529,20 @@ class VisualizerRenderer:
         thr = float(self._runtime_throttle)
         self._frame_i = (self._frame_i + 1) & 0x7FFFFFFF
 
+        # Mouse follow: yaw from X, height bias from Y (slow lerp)
+        target_yaw = (self._mouse_nx - 0.5) * (math.pi * 1.85)
+        if self._pointer_active:
+            dyaw = (target_yaw - self._angle + math.pi) % (math.pi * 2.0) - math.pi
+            self._angle += dyaw * min(1.0, dt * 1.35)
+            target_h = (0.5 - self._mouse_ny) * 2.4
+            self._cam_h_bias += (target_h - self._cam_h_bias) * min(1.0, dt * 1.2)
         if self._auto_rotate:
-            self._angle += dt * (0.18 + energy * 0.35 + beat * 0.5)
+            spin = (
+                0.06 + energy * 0.12 + beat * 0.18
+                if self._pointer_active
+                else 0.18 + energy * 0.35 + beat * 0.5
+            )
+            self._angle += dt * spin
         self._frame_angle += dt * (0.22 + energy * 0.15 + beat * 0.35)
         self._label_angle -= dt * (0.07 + energy * 0.04 + beat * 0.06)
 
@@ -1560,7 +1565,7 @@ class VisualizerRenderer:
         aspect = self._fbo_w / max(self._fbo_h, 1)
         proj = perspective(52.0, aspect, 0.1, 80.0)
         cam_r = 9.5 - energy * 1.2 - beat * 0.8
-        cam_h = 4.2 + a.mid * 0.8 + math.sin(t * 0.4) * 0.3
+        cam_h = 4.2 + a.mid * 0.8 + math.sin(t * 0.4) * 0.3 + float(self._cam_h_bias)
         eye = np.array(
             [math.cos(self._angle) * cam_r, cam_h, math.sin(self._angle) * cam_r],
             dtype=np.float32,
@@ -1750,9 +1755,9 @@ class VisualizerRenderer:
         use_trails = bool(self.enable_trails and self._runtime_trails_ok)
         if use_trails:
             src, dst = self._trail_idx, 1 - self._trail_idx
-            decay = float(np.clip(self.trail_decay + energy * 0.01 + beat * 0.015, 0.70, 0.92))
-            gain = float(np.clip(self.trail_scene_gain + beat * 0.05 + energy * 0.02, 0.28, 0.55))
-            zoom = float(self.trail_zoom - beat * 0.0008 - energy * 0.0004)
+            decay = float(np.clip(self.trail_decay + energy * 0.01 + beat * 0.015, 0.74, 0.94))
+            gain = float(np.clip(self.trail_scene_gain + beat * 0.05 + energy * 0.02, 0.32, 0.55))
+            zoom = float(self.trail_zoom - beat * 0.0005 - energy * 0.00025)
             glBindFramebuffer(GL_FRAMEBUFFER, self._fbo_trail[dst])
             glViewport(0, 0, self._fbo_w, self._fbo_h)
             glDisable(GL_DEPTH_TEST)
@@ -1769,13 +1774,13 @@ class VisualizerRenderer:
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
             self._trail_idx = dst
             trail_tex = self._tex_trail[self._trail_idx]
-            trail_mix = float(np.clip(self.trail_mix + energy * 0.05 + beat * 0.05, 0.30, 0.62))
+            trail_mix = float(np.clip(self.trail_mix + energy * 0.05 + beat * 0.05, 0.36, 0.70))
         else:
             trail_tex = self._tex_scene
             trail_mix = 0.0
 
         # ---- CRT post to window (always — scanlines are cheap) ----
-        aberr = float(max(self.aberration, 0.0005) * (1.0 + energy * 0.25 + beat * 0.15))
+        aberr = float(max(self.aberration, 0.00055) * (1.0 + energy * 0.12 + beat * 0.08))
         if thr < 0.5:
             aberr *= 0.5  # slightly cheaper sampling when pressured
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
@@ -1791,9 +1796,9 @@ class VisualizerRenderer:
         _u1f(self.prog_post, "uBeat", beat)
         _u1f(self.prog_post, "uTime", t)
         _u1f(self.prog_post, "uExposure", self.exposure)
-        _u1f(self.prog_post, "uBarrel", max(self.crt_barrel, 0.06))
-        _u1f(self.prog_post, "uScanline", max(self.crt_scanline, 0.85))
-        _u1f(self.prog_post, "uVignette", max(self.crt_vignette, 0.35))
+        _u1f(self.prog_post, "uBarrel", max(self.crt_barrel, 0.05))
+        _u1f(self.prog_post, "uScanline", max(self.crt_scanline, 0.80))
+        _u1f(self.prog_post, "uVignette", max(self.crt_vignette, 0.28))
         glUniform2f(glGetUniformLocation(self.prog_post, "uResolution"), float(self.width), float(self.height))
         glUniform2f(
             glGetUniformLocation(self.prog_post, "uInternal"),

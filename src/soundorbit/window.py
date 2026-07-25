@@ -110,7 +110,7 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         )
         subtitle.add_css_class("dim-label")
         keys = Gtk.Label(
-            label="Esc 終了  ·  F11 全画面  ·  Space 回転ON/OFF  ·  H ヘルプ表示/非表示"
+            label="Esc 終了  ·  F11 全画面  ·  Space 自動回転  ·  マウスで視点  ·  H ヘルプ"
         )
         keys.add_css_class("osd-keys")
 
@@ -160,8 +160,22 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         click.connect("pressed", lambda *_: self._toggle_hint())
         self._gl.add_controller(click)
 
+        # マウス位置 → カメラゆっくり追従
+        motion = Gtk.EventControllerMotion()
+        motion.connect("motion", self._on_pointer_motion)
+        motion.connect("enter", self._on_pointer_enter)
+        self._gl.add_controller(motion)
+
         self.connect("close-request", self._on_close)
         self.connect("map", self._on_map)
+
+    def _on_pointer_enter(self, _ctrl, _x: float, _y: float) -> None:
+        self._gl.grab_focus()
+
+    def _on_pointer_motion(self, _ctrl, x: float, y: float) -> None:
+        w = max(1, self._gl.get_width())
+        h = max(1, self._gl.get_height())
+        self._renderer.set_pointer(x / w, y / h)
 
     def _on_map(self, *_args) -> None:
         # 起動直後に全画面

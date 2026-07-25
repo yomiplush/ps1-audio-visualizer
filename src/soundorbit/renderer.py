@@ -157,29 +157,19 @@ void main() {
 }
 """
 
-# Shared GLSL snippets injected into fragment shaders (Linux + Windows parity).
-# Sega Saturn "mesh" (半透明メッシュ): screen-space stipple instead of smooth alpha.
-_GLSL_SATURN_MESH = """
-// Boost chroma without whitening (luma-preserving)
+# Shared GLSL (Linux + Windows). PS1 look = low-res quantize / UV snap in post,
+# NOT Sega Saturn mesh transparency.
+_GLSL_COMMON = """
+// amt>0 boost chroma, amt<0 desaturate (PS1-muted)
 vec3 boostSat(vec3 c, float amt) {
     float l = dot(c, vec3(0.299, 0.587, 0.114));
     return clamp(mix(vec3(l), c, 1.0 + amt), 0.0, 1.35);
 }
-// Saturn mesh: for partial alpha, keep only a fraction of screen pixels (solid dots).
-// denser holes when more transparent — classic セガサターン メッシュ透過 feel.
-bool saturnMeshKill(float alpha) {
-    if (alpha >= 0.97) return false;
-    if (alpha < 0.02) return true;
-    ivec2 ip = ivec2(floor(gl_FragCoord.xy));
-    // 2×2 ordered matrix → 0..3; survive if cell < alpha*4
-    int cell = (ip.x & 1) | ((ip.y & 1) << 1);
-    float thresh = clamp(alpha, 0.0, 1.0) * 4.0;
-    return (float(cell) + 0.5) > thresh;
-}
-// Apply mesh then force surviving pixels solid (dot carries the translucency)
-float saturnMeshAlpha(float alpha) {
-    if (saturnMeshKill(alpha)) discard;
-    return alpha >= 0.97 ? alpha : 1.0;
+// Hard alpha cut (no stipple mesh) — PS1 often just on/off or flat blend
+float ps1Alpha(float a) {
+    if (a < 0.04) discard;
+    // slight posterize of alpha channel for chunky edges
+    return floor(clamp(a, 0.0, 1.0) * 4.0 + 0.5) / 4.0;
 }
 """
 
@@ -197,16 +187,16 @@ uniform float uTime;
 
 out vec4 FragColor;
 
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 vec3 palette(float t) {
-    // シアン → マゼンタ → アンバー（高彩度）
-    vec3 a = vec3(0.02, 0.55, 1.00);
-    vec3 b = vec3(0.95, 0.08, 0.98);
-    vec3 c = vec3(1.00, 0.42, 0.02);
+    // PS1: ややくすんだシアン → マゼンタ → アンバー
+    vec3 a = vec3(0.18, 0.42, 0.72);
+    vec3 b = vec3(0.72, 0.22, 0.68);
+    vec3 c = vec3(0.82, 0.48, 0.22);
     float s = smoothstep(0.0, 1.0, t);
     vec3 col = mix(a, b, smoothstep(0.0, 0.55, s));
     col = mix(col, c, smoothstep(0.45, 1.0, s));
-    return boostSat(col, 0.42);
+    return boostSat(col, -0.08); // 彩度を少し落とす
 }
 
 void main() {
@@ -221,17 +211,17 @@ void main() {
     float hNorm = clamp(vHeight / 4.5, 0.0, 1.0);
     float body = 0.28 + diff * 0.55 + hNorm * 0.18 + uBeat * 0.06;
     vec3 col = base * body;
-    col += base * rim * 0.28;
+    col += base * rim * 0.22;
     float top = smoothstep(0.78, 1.0, vWorldPos.y / max(vHeight, 0.01));
-    col += base * top * 0.18;
-    col = boostSat(col, 0.18);
+    col += base * top * 0.14;
+    col = boostSat(col, -0.06);
 
     float peak = max(col.r, max(col.g, col.b));
     if (peak > 0.95) {
         col *= 0.95 / peak;
     }
 
-    float alpha = saturnMeshAlpha(0.90 + rim * 0.06);
+    float alpha = ps1Alpha(0.90 + rim * 0.06);
     FragColor = vec4(col, alpha);
 }
 """
@@ -277,7 +267,7 @@ uniform float uTime;
 
 out vec4 FragColor;
 
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 void main() {
     vec3 N = normalize(vNormal);
     vec3 V = normalize(uCamPos - vWorldPos);
@@ -290,8 +280,8 @@ void main() {
     float bands = abs(sin(vLocal.y * 12.0 + uTime * 4.0 + uBeat * 3.0));
     base += vec3(0.15, 0.70, 1.0) * bands * 0.18 * uTreble;
     vec3 col = base * (0.35 + fres * 1.2) + base * fres * 0.45 * (0.4 + uBeat);
-    col = boostSat(col, 0.40);
-    float a = saturnMeshAlpha(0.92);
+    col = boostSat(col, -0.08);
+    float a = ps1Alpha(0.92);
     FragColor = vec4(col, a);
 }
 """
@@ -322,7 +312,7 @@ in float vAlpha;
 in float vT;
 uniform float uHue;
 out vec4 FragColor;
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 vec3 hsv2rgb(vec3 c) {
     vec3 p = abs(fract(c.xxx + vec3(0.0, 2.0/3.0, 1.0/3.0)) * 6.0 - 3.0);
     return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
@@ -331,10 +321,10 @@ void main() {
     float edge = smoothstep(0.0, 0.15, vT) * smoothstep(1.0, 0.85, vT);
     float dash = 0.65 + 0.35 * smoothstep(0.2, 0.5, abs(sin(vT * 3.14159265 * 48.0)));
     // high S for punchy ribbon hues
-    vec3 col = hsv2rgb(vec3(fract(uHue + vT * 0.15), 0.98, 1.0));
-    col = boostSat(col, 0.25);
+    vec3 col = hsv2rgb(vec3(fract(uHue + vT * 0.15), 0.72, 0.92));
+    col = boostSat(col, -0.10);
     float a = vAlpha * dash * (0.7 + 0.3 * edge);
-    a = saturnMeshAlpha(a);
+    a = ps1Alpha(a);
     FragColor = vec4(col, a);
 }
 """
@@ -364,7 +354,7 @@ in float vLife;
 in float vHue;
 out vec4 FragColor;
 
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 vec3 hsv2rgb(vec3 c) {
     vec3 p = abs(fract(c.xxx + vec3(0.0, 2.0/3.0, 1.0/3.0)) * 6.0 - 3.0);
     return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
@@ -375,10 +365,10 @@ void main() {
     float d = dot(p, p);
     if (d > 1.0) discard;
     float soft = exp(-d * 3.2);
-    vec3 col = hsv2rgb(vec3(fract(vHue), 0.95, 1.0));
-    col = boostSat(col, 0.30);
+    vec3 col = hsv2rgb(vec3(fract(vHue), 0.70, 0.92));
+    col = boostSat(col, -0.08);
     // Soft edges → Saturn mesh dots (not smooth alpha fade)
-    float a = saturnMeshAlpha(soft * vLife * 0.9);
+    float a = ps1Alpha(soft * vLife * 0.9);
     FragColor = vec4(col, a);
 }
 """
@@ -403,17 +393,18 @@ in float vDist;
 uniform float uEnergy;
 uniform float uBeat;
 out vec4 FragColor;
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 void main() {
     float fade = 1.0 - smoothstep(1.5, 13.0, vDist);
-    vec3 blue = vec3(0.05, 0.55, 1.0);
-    vec3 cyan = vec3(0.10, 0.95, 1.0);
-    vec3 col = mix(blue, cyan, clamp(uEnergy * 0.55 + uBeat * 0.25, 0.0, 1.0));
-    col = boostSat(col, 0.45);
-    float core = 1.0 - smoothstep(0.0, 6.0, vDist);
-    float a = (0.22 + uEnergy * 0.28 + uBeat * 0.12 + core * 0.18) * fade;
-    col *= 0.85 + core * 0.45 + uEnergy * 0.25;
-    a = saturnMeshAlpha(clamp(a, 0.0, 0.95));
+    // 中心だけシアン、外側はほぼ消える
+    vec3 blue = vec3(0.14, 0.32, 0.52);
+    vec3 cyan = vec3(0.18, 0.48, 0.58);
+    vec3 col = mix(blue, cyan, clamp(uEnergy * 0.45 + uBeat * 0.20, 0.0, 1.0));
+    col = boostSat(col, -0.10);
+    float core = 1.0 - smoothstep(0.0, 4.5, vDist);
+    float a = (0.10 + uEnergy * 0.18 + uBeat * 0.08 + core * 0.22) * fade * (0.35 + core * 0.65);
+    col *= 0.55 + core * 0.55 + uEnergy * 0.15;
+    a = ps1Alpha(clamp(a, 0.0, 0.85));
     FragColor = vec4(col, a);
 }
 """
@@ -435,34 +426,33 @@ uniform float uTime;
 uniform float uEnergy;
 uniform float uBeat;
 out vec4 FragColor;
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 void main() {
     vec2 p = vUv - 0.5;
     float r = length(p);
-    vec3 c0 = vec3(0.010, 0.012, 0.045);
-    vec3 c1 = vec3(0.05, 0.008, 0.12);
-    vec3 c2 = vec3(0.0, 0.06, 0.10);
-    vec3 col = mix(c0, c1, smoothstep(0.0, 0.85, r));
-    col = mix(col, c2, 0.25 + 0.18 * sin(uTime * 0.28));
+    // 外周はほぼ黒、中心付近だけ青み
+    vec3 black = vec3(0.004, 0.005, 0.010);
+    vec3 mid = vec3(0.012, 0.018, 0.040);
+    vec3 coreBlue = vec3(0.04, 0.10, 0.22);
+    float coreMask = exp(-r * r * 14.0);           // 中心に強く寄せる
+    float midMask = exp(-r * r * 5.5);
+    vec3 col = black;
+    col = mix(col, mid, midMask * 0.85);
+    col = mix(col, coreBlue, coreMask * (0.55 + uEnergy * 0.25));
 
-    float yBand = exp(-pow(p.y / (0.09 + uEnergy * 0.04 + uBeat * 0.03), 2.0));
-    float xFall = 1.0 - smoothstep(0.05, 0.72, abs(p.x));
-    float xGrad = p.x * 0.5 + 0.5;
-    vec3 cyanA = vec3(0.05, 0.70, 1.00);
-    vec3 cyanB = vec3(0.15, 0.35, 1.00);
-    vec3 cyanC = vec3(0.10, 0.95, 0.75);
-    vec3 hCol = mix(cyanB, cyanA, smoothstep(0.0, 0.55, xGrad));
-    hCol = mix(hCol, cyanC, smoothstep(0.45, 1.0, xGrad));
-    hCol = boostSat(hCol, 0.35);
-    float pulse = 0.10 + uEnergy * 0.22 + uBeat * 0.18;
-    float wave = 0.88 + 0.12 * sin(p.x * 10.0 - uTime * 1.4 + uBeat * 2.0);
-    col += hCol * yBand * xFall * pulse * wave;
+    // 中央水平の淡い発光（幅を狭く）
+    float yBand = exp(-pow(p.y / (0.055 + uEnergy * 0.025 + uBeat * 0.02), 2.0));
+    float xFall = 1.0 - smoothstep(0.02, 0.42, abs(p.x));
+    vec3 hCol = vec3(0.12, 0.32, 0.55);
+    float pulse = 0.06 + uEnergy * 0.14 + uBeat * 0.10;
+    float wave = 0.90 + 0.10 * sin(p.x * 10.0 - uTime * 1.4 + uBeat * 2.0);
+    col += hCol * yBand * xFall * pulse * wave * coreMask;
 
-    float core = exp(-r * r * 7.5) * (0.05 + uEnergy * 0.12 + uBeat * 0.08);
-    col += vec3(0.10, 0.55, 1.00) * core;
-
-    col += vec3(0.55, 0.05, 0.65) * uBeat * 0.06 * (yBand * 0.5 + (1.0 - r) * 0.3);
-    col = boostSat(col, 0.22);
+    col += vec3(0.08, 0.22, 0.40) * coreMask * (0.04 + uEnergy * 0.10 + uBeat * 0.06);
+    col += vec3(0.25, 0.06, 0.28) * uBeat * 0.03 * coreMask;
+    // 外側をさらに黒へ
+    col *= mix(0.15, 1.0, midMask);
+    col = boostSat(col, -0.12);
 
     FragColor = vec4(col, 1.0);
 }
@@ -496,12 +486,12 @@ uniform vec3 uColor;
 uniform float uAlpha;
 uniform float uBeat;
 out vec4 FragColor;
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 void main() {
     float dash = 0.6 + 0.4 * smoothstep(0.12, 0.4, abs(sin(vT * 3.14159265 * 40.0)));
     float a = clamp(uAlpha * vPulse * dash * (0.9 + uBeat * 0.25), 0.0, 1.0);
-    vec3 col = boostSat(uColor, 0.40) * (0.85 + vPulse * 0.4 + uBeat * 0.2);
-    a = saturnMeshAlpha(a);
+    vec3 col = boostSat(uColor, -0.05) * (0.85 + vPulse * 0.35 + uBeat * 0.15);
+    a = ps1Alpha(a);
     FragColor = vec4(col, a);
 }
 """
@@ -524,28 +514,23 @@ void main() {
 
 LABEL_FRAG = """
 #version 330 core
-// Premultiplied RGBA texture — blend with ONE, ONE_MINUS_SRC_ALPHA
-// Semi-transparent edges use Saturn mesh dots.
+// Premultiplied RGBA — blend with ONE, ONE_MINUS_SRC_ALPHA
+// PS1: hard alpha cut, no mesh stipple
 in vec2 vUv;
 uniform sampler2D uTex;
 uniform float uAlpha;
 uniform float uBeat;
 uniform float uEnergy;
 out vec4 FragColor;
-""" + _GLSL_SATURN_MESH + """
+""" + _GLSL_COMMON + """
 void main() {
     vec4 t = texture(uTex, vUv);
     float vFade = smoothstep(0.0, 0.12, vUv.y) * smoothstep(1.0, 0.88, vUv.y);
-    float a = t.a * uAlpha * vFade;
-    if (a < 0.02) discard;
+    float a = ps1Alpha(t.a * uAlpha * vFade);
     float glow = 0.90 + uEnergy * 0.18 + uBeat * 0.22;
-    vec3 rgb = boostSat(t.rgb, 0.28) * glow * uAlpha * vFade;
-    // Mesh on translucent glyph fringes / fades
-    if (a < 0.92 && saturnMeshKill(a)) discard;
-    float outA = a >= 0.92 ? a : 1.0;
-    // premultiplied: rgb already * straight-a-ish; re-scale to solid mesh dots
-    if (a < 0.92) rgb = (rgb / max(a, 0.001)) * outA;
-    FragColor = vec4(rgb, outA);
+    vec3 rgb = boostSat(t.rgb, -0.06) * glow * uAlpha * vFade;
+    // premultiplied
+    FragColor = vec4(rgb, a);
 }
 """
 
@@ -650,13 +635,13 @@ vec3 tonemap(vec3 x) {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
-// 256 色制限: 3-3-2 bit RGB（R8 × G8 × B4 = 256）
-// レトロ VGA / 8bit コンソール風のポスタリゼーション
-vec3 quantize256(vec3 c) {
+// PS1-ish: coarse RGB posterization (chunky gradients)
+vec3 quantizePS1(vec3 c) {
     c = clamp(c, 0.0, 1.0);
-    float r = floor(c.r * 7.0 + 0.5) / 7.0;
-    float g = floor(c.g * 7.0 + 0.5) / 7.0;
-    float b = floor(c.b * 3.0 + 0.5) / 3.0;
+    // ~5/5/5 style banding (PlayStation VRAM feel)
+    float r = floor(c.r * 5.0 + 0.5) / 5.0;
+    float g = floor(c.g * 5.0 + 0.5) / 5.0;
+    float b = floor(c.b * 5.0 + 0.5) / 5.0;
     return vec3(r, g, b);
 }
 
@@ -665,14 +650,15 @@ vec3 boostSat(vec3 c, float amt) {
     return clamp(mix(vec3(l), c, 1.0 + amt), 0.0, 1.0);
 }
 
-// Soft CRT bezel alpha → Saturn mesh dots at the edge
-bool saturnMeshKill(float alpha) {
-    if (alpha >= 0.97) return false;
-    if (alpha < 0.02) return true;
-    ivec2 ip = ivec2(floor(gl_FragCoord.xy));
-    int cell = (ip.x & 1) | ((ip.y & 1) << 1);
-    float thresh = clamp(alpha, 0.0, 1.0) * 4.0;
-    return (float(cell) + 0.5) > thresh;
+// Bayer 2x2 ordered dither — for banding/jaggies, NOT mesh transparency
+float bayer2(vec2 p) {
+    int x = int(mod(floor(p.x), 2.0));
+    int y = int(mod(floor(p.y), 2.0));
+    int i = x + y * 2;
+    // 0,2,3,1 → 0..1
+    float m[4];
+    m[0]=0.0; m[1]=0.5; m[2]=0.75; m[3]=0.25;
+    return m[i];
 }
 
 void main() {
@@ -680,90 +666,79 @@ void main() {
     float barrel = uBarrel * (1.0 + uEnergy * 0.04 + uBeat * 0.03);
     vec2 uv = crtBarrel(vUv, barrel);
 
-    // 歪みで UV が枠外 → 透過ベゼル（不透明な黒帯にしない）
-    // やや広いソフトエッジでガラス縁のように溶ける
-    vec2 edge = smoothstep(vec2(-0.015), vec2(0.035), uv)
-              * smoothstep(vec2(-0.015), vec2(0.035), 1.0 - uv);
+    // ベゼルは薄く（四隅の黒領域を小さく）
+    vec2 edge = smoothstep(vec2(-0.008), vec2(0.018), uv)
+              * smoothstep(vec2(-0.008), vec2(0.018), 1.0 - uv);
     float inScreen = edge.x * edge.y;
     if (inScreen < 1e-4) {
-        FragColor = vec4(0.0); // 完全透過
+        FragColor = vec4(0.0);
         return;
     }
 
-    // ジャギ強化: UV を内部解像度の格子にスナップ（階段状のピクセル）
-    // 枠外 UV は clamp してサンプリング（端色がにじむ）
     vec2 ires = max(uInternal, vec2(64.0, 48.0));
     vec2 uvS = clamp(uv, 0.0, 1.0);
     uvS = (floor(uvS * ires) + 0.5) / ires;
 
-    // 色収差は控えめ（酔い・苦手な人向け）+ 端ほど少し強め
+    // 色収差: 微妙に（端ほどわずかに強め）
     float edgeDist = length(uvS - 0.5);
-    float aberr = uAberr * (1.0 + uEnergy * 0.22 + uBeat * 0.30);
-    aberr *= 0.97 + 0.03 * sin(uTime * 5.5 + uBeat * 4.0);
-    aberr *= 1.0 + edgeDist * 0.8;
-    if (aberr > 1e-6) {
-        aberr = max(aberr, 1.0 / ires.x);
-    }
+    float aberr = max(uAberr, 0.00055);
+    aberr *= (1.0 + uEnergy * 0.12 + uBeat * 0.10);
+    aberr *= 0.98 + 0.02 * sin(uTime * 4.0);
+    aberr *= 1.0 + edgeDist * 0.55;
+    aberr = max(aberr, 0.75 / ires.x);
 
     vec3 scene = sampleSplit(uScene, uvS, aberr);
-    vec3 trail = sampleSplit(uTrail, uvS, aberr * 1.05);
+    vec3 trail = sampleSplit(uTrail, uvS, aberr * 1.08);
 
-    // 画面全体の残像（視認しやすい程度・控えめ）
-    trail *= vec3(0.82, 0.96, 1.05);
+    // 残像（フォスファー）を少し強めに
+    trail *= vec3(0.78, 0.94, 1.02);
     float mixAmt = clamp(uTrailMix, 0.0, 1.0);
-    mixAmt *= 0.85 + uEnergy * 0.06 + uBeat * 0.05;
-    vec3 col = mix(scene, trail, mixAmt * 0.42);
-    vec3 ghost = max(trail - scene * 0.55, 0.0);
-    col += ghost * mixAmt * 0.28;
-    col = mix(col, max(col, scene), 0.45);
+    mixAmt *= 0.92 + uEnergy * 0.08 + uBeat * 0.06;
+    vec3 col = mix(scene, trail, mixAmt * 0.52);
+    vec3 ghost = max(trail - scene * 0.48, 0.0);
+    col += ghost * mixAmt * 0.36;
+    col = mix(col, max(col, scene), 0.38);
 
     col *= uExposure;
 
-    // 2) スキャンライン
+    // スキャンライン
     float py = gl_FragCoord.y;
     float slot = mod(floor(py), 4.0);
     float mask = 1.0 - step(2.0, slot);
     float scanEdge = abs(mod(py, 4.0) - 1.5);
     float softMask = mix(mask, mask * 0.85, smoothstep(0.5, 1.5, scanEdge));
     float s = clamp(uScanline, 0.0, 1.0);
-    // Hard CRT scanlines (match Windows reverse-port)
-    float darkKeep = mix(1.0, 0.02, s);
+    float darkKeep = mix(1.0, 0.04, s);
     col *= mix(1.0, darkKeep, softMask);
     float roll = 0.97 + 0.03 * sin(py * 0.35 - uTime * 1.6 + uBeat * 2.0);
     col *= roll;
-    col *= mix(1.0, 0.88, step(1.0, mod(floor(py), 2.0)) * s * 0.5);
+    col *= mix(1.0, 0.90, step(1.0, mod(floor(py), 2.0)) * s * 0.45);
 
-    // 3) 四隅は「黒く塗る」より「アルファで抜く」（透過ベゼル）
+    // 四隅ビネット: より外側だけ（＝四隅を小さく）
     vec2 vc = uvS * 2.0 - 1.0;
-    float r = length(vc);
-    float soft = smoothstep(0.82, 1.28, r);
-    float corner = pow(max(abs(vc.x), abs(vc.y)), 3.0);
-    corner = smoothstep(0.78, 1.12, corner);
-    float vigShape = clamp(soft * 0.55 + corner * 0.45, 0.0, 1.0);
-    // RGB はほぼ落とさず、透明度で外周を消す
-    float vigA = 1.0 - uVignette * vigShape * 0.92;
-    float vigRgb = 1.0 - uVignette * vigShape * 0.12;
+    float soft = smoothstep(0.92, 1.22, length(vc));
+    float corner = pow(max(abs(vc.x), abs(vc.y)), 4.0);
+    corner = smoothstep(0.88, 1.08, corner);
+    float vigShape = clamp(soft * 0.40 + corner * 0.60, 0.0, 1.0);
+    float vigA = 1.0 - uVignette * vigShape * 0.72;
+    float vigRgb = 1.0 - uVignette * vigShape * 0.10;
     col *= vigRgb;
 
-    // 端のソフトフォールオフ → アルファ
-    float frameA = smoothstep(0.0, 0.12, inScreen);
+    float frameA = smoothstep(0.0, 0.08, inScreen);
     float alpha = clamp(frameA * vigA, 0.0, 1.0);
 
-    // CRT ガラスのわずかな周辺緑寄り（ごく薄く）
-    col *= mix(vec3(1.0), vec3(0.92, 1.0, 0.95), edgeDist * 0.10 * uVignette);
+    col *= mix(vec3(1.0), vec3(0.94, 0.98, 0.96), edgeDist * 0.06 * uVignette);
 
     col = tonemap(col);
-    // 最終段で彩度を少し盛る（レトロ CRT のくっきりした色）
-    col = boostSat(col, 0.32);
-    // 256 色パレット（3-3-2）で発色を制限
-    col = quantize256(col);
-    // ベゼル透過はスムースαではなくサターン・メッシュのドット
-    if (alpha < 0.97 && saturnMeshKill(alpha)) {
+    // PS1: muted chroma + dither-before-quantize (jagged banding, not mesh)
+    col = boostSat(col, -0.14);
+    float dith = (bayer2(gl_FragCoord.xy) - 0.5) * (1.0 / 5.0);
+    col = quantizePS1(col + dith);
+    if (alpha < 0.03) {
         FragColor = vec4(0.0);
         return;
     }
-    float outA = alpha >= 0.97 ? alpha : 1.0;
-    // プレマルチプライド
+    float outA = clamp(alpha, 0.0, 1.0);
     FragColor = vec4(col * outA, outA);
 }
 """
@@ -1143,6 +1118,11 @@ class VisualizerRenderer:
         self._last_t = self._t0
         self._angle = 0.0
         self._auto_rotate = True
+        # Mouse follow (normalized 0..1); smooth lerp each frame
+        self._mouse_nx = 0.5
+        self._mouse_ny = 0.5
+        self._cam_h_bias = 0.0
+        self._pointer_active = False
         self._ready = False
         self.quality = quality or detect_quality()
         self.particles = ParticleSystem(self.quality.particle_count)
@@ -1230,22 +1210,23 @@ class VisualizerRenderer:
                 self.internal_w = max(96, min(640, int(a)))
                 self.internal_h = max(72, min(480, int(b)))
             except ValueError:
-                self.internal_w, self.internal_h = 240, 180
+                self.internal_w, self.internal_h = 200, 150
         else:
-            self.internal_w, self.internal_h = 240, 180
+            # PS1-ish chunky default
+            self.internal_w, self.internal_h = 200, 150
 
     def _apply_quality_params(self, q: QualityProfile) -> None:
         self.trail_decay = q.trail_decay
         self.trail_scene_gain = q.trail_scene_gain
         self.trail_mix = q.trail_mix
-        self.trail_zoom = 0.998
-        self.aberration = q.aberration if q.rgb_shift else 0.0
-        # 画面全体残像は品質に関わらず有効（メモリ hard 時のみ resources が切る）
+        self.trail_zoom = 0.9975
+        # 常に微妙な色収差（rgb_shift 品質なら少し強め）
+        base_aberr = 0.0007
+        self.aberration = max(base_aberr, float(q.aberration) if q.rgb_shift else base_aberr)
         self.enable_trails = True
         self.fbo_scale = float(np.clip(q.fbo_scale, 0.35, 1.0))
         self.particle_emit_scale = q.particle_emit_scale
-        self.exposure = 0.88  # 全体を少し暗めに（白飛び対策）
-        # ブラウン管演出（ポストプロセス）
+        self.exposure = 0.90
         self._apply_crt_from_env()
         self._apply_trail_from_env()
 
@@ -1267,10 +1248,10 @@ class VisualizerRenderer:
             except ValueError:
                 return default
 
-        # Windows 版に合わせたやや強めの残像
-        self.trail_decay = float(np.clip(_f("SOUNDORBIT_TRAIL_DECAY", 0.82), 0.5, 0.97))
-        self.trail_scene_gain = float(np.clip(_f("SOUNDORBIT_TRAIL_GAIN", 0.36), 0.1, 0.85))
-        self.trail_mix = float(np.clip(_f("SOUNDORBIT_TRAIL_MIX", 0.42), 0.0, 0.95))
+        # 残像を少し強め（フォスファー感）
+        self.trail_decay = float(np.clip(_f("SOUNDORBIT_TRAIL_DECAY", 0.86), 0.5, 0.97))
+        self.trail_scene_gain = float(np.clip(_f("SOUNDORBIT_TRAIL_GAIN", 0.40), 0.1, 0.85))
+        self.trail_mix = float(np.clip(_f("SOUNDORBIT_TRAIL_MIX", 0.52), 0.0, 0.95))
 
     def _apply_crt_from_env(self) -> None:
         """
@@ -1295,12 +1276,10 @@ class VisualizerRenderer:
             except ValueError:
                 return default
 
-        # 歪み・黒枠は控えめ（映像エリアを広く）
-        # 歪みは弱め（枠外は黒ではなく透過）
-        # Windows 版と揃えた強め CRT 既定
-        self.crt_barrel = float(np.clip(_f("SOUNDORBIT_CRT_BARREL", 0.11), 0.0, 0.45))
-        self.crt_scanline = float(np.clip(_f("SOUNDORBIT_CRT_SCANLINE", 0.98), 0.0, 1.0))
-        self.crt_vignette = float(np.clip(_f("SOUNDORBIT_CRT_VIGNETTE", 0.48), 0.0, 1.0))
+        # 四隅を小さく: バレル弱め・ビネットはシェーダ側で外側寄り
+        self.crt_barrel = float(np.clip(_f("SOUNDORBIT_CRT_BARREL", 0.08), 0.0, 0.45))
+        self.crt_scanline = float(np.clip(_f("SOUNDORBIT_CRT_SCANLINE", 0.92), 0.0, 1.0))
+        self.crt_vignette = float(np.clip(_f("SOUNDORBIT_CRT_VIGNETTE", 0.38), 0.0, 1.0))
 
     def apply_resource_state(
         self,
@@ -1753,6 +1732,12 @@ class VisualizerRenderer:
     def toggle_rotation(self) -> None:
         self._auto_rotate = not self._auto_rotate
 
+    def set_pointer(self, nx: float, ny: float) -> None:
+        """Window-normalized pointer (0..1). Camera yaw/pitch slowly follow."""
+        self._mouse_nx = float(np.clip(nx, 0.0, 1.0))
+        self._mouse_ny = float(np.clip(ny, 0.0, 1.0))
+        self._pointer_active = True
+
     def _upload_param_texture(self, index: int, label: str, value: float) -> None:
         """数値が変わったときだけ Cairo で描き直してアップロード。"""
         # peak は振幅が 1 超えることがあるので表示用に整形
@@ -1831,9 +1816,22 @@ class VisualizerRenderer:
         energy = float(np.clip(a.rms * 0.7 + a.bass * 0.5 + a.mid * 0.3, 0.0, 1.5))
         beat = float(a.beat)
 
-        # カメラ回転
+        # カメラ: マウス位置へゆっくり追従（X=ヨー, Y=高さバイアス）
+        # nx=0 → 左周り, nx=1 → 右周り（約 ±180°）
+        target_yaw = (self._mouse_nx - 0.5) * (math.pi * 1.85)
+        if self._pointer_active:
+            # shortest-path lerp
+            dyaw = (target_yaw - self._angle + math.pi) % (math.pi * 2.0) - math.pi
+            follow = min(1.0, dt * 1.35)  # ゆっくり
+            self._angle += dyaw * follow
+            target_h = (0.5 - self._mouse_ny) * 2.4  # 上に上げるとカメラ上昇
+            self._cam_h_bias += (target_h - self._cam_h_bias) * min(1.0, dt * 1.2)
         if self._auto_rotate:
-            self._angle += dt * (0.18 + energy * 0.35 + beat * 0.5)
+            # 追従中は弱いドリフトのみ、未検出時は従来どおり公転
+            spin = 0.06 + energy * 0.12 + beat * 0.18 if self._pointer_active else (
+                0.18 + energy * 0.35 + beat * 0.5
+            )
+            self._angle += dt * spin
 
         # 緑外枠・数値パネルは中心軸まわりに回転（音で少し加速）
         self._frame_angle += dt * (0.22 + energy * 0.15 + beat * 0.35)
@@ -1862,7 +1860,7 @@ class VisualizerRenderer:
         aspect = self._fbo_w / max(self._fbo_h, 1)
         proj = perspective(52.0, aspect, 0.1, 80.0)
         cam_r = 9.5 - energy * 1.2 - beat * 0.8
-        cam_h = 4.2 + a.mid * 0.8 + math.sin(t * 0.4) * 0.3
+        cam_h = 4.2 + a.mid * 0.8 + math.sin(t * 0.4) * 0.3 + float(self._cam_h_bias)
         eye = np.array(
             [
                 math.cos(self._angle) * cam_r,
@@ -2109,9 +2107,9 @@ class VisualizerRenderer:
             src = self._trail_idx
             dst = 1 - src
             # 控えめな持続（尾は見えるが主役は現在画）
-            decay = float(np.clip(self.trail_decay + energy * 0.008 + beat * 0.01, 0.65, 0.88))
-            scene_gain = float(np.clip(self.trail_scene_gain + beat * 0.03, 0.18, 0.40))
-            zoom = float(self.trail_zoom - beat * 0.0006 - energy * 0.0003)
+            decay = float(np.clip(self.trail_decay + energy * 0.008 + beat * 0.01, 0.72, 0.93))
+            scene_gain = float(np.clip(self.trail_scene_gain + beat * 0.04, 0.28, 0.52))
+            zoom = float(self.trail_zoom - beat * 0.0005 - energy * 0.00025)
 
             glBindFramebuffer(GL_FRAMEBUFFER, self._fbo_trail[dst])
             glViewport(0, 0, self._fbo_w, self._fbo_h)
@@ -2129,13 +2127,13 @@ class VisualizerRenderer:
             glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
             self._trail_idx = dst
             trail_tex = self._tex_trail[self._trail_idx]
-            trail_mix = float(np.clip(self.trail_mix + energy * 0.03 + beat * 0.03, 0.18, 0.48))
+            trail_mix = float(np.clip(self.trail_mix + energy * 0.04 + beat * 0.04, 0.32, 0.68))
         else:
             trail_tex = self._tex_scene
             trail_mix = 0.0
 
         # ---- 3) 最終合成（RGB ずらし + CRT）→ GLArea の FB ----
-        aberr = float(self.aberration * (1.0 + energy * 0.18)) if self.aberration > 0 else 0.0
+        aberr = float(max(self.aberration, 0.00055) * (1.0 + energy * 0.12 + beat * 0.08))
 
         glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo)
         glViewport(0, 0, self.width, self.height)
