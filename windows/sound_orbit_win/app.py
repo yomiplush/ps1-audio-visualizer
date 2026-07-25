@@ -1,10 +1,16 @@
-"""GLFW window + main loop for SoundOrbit Windows."""
+"""GLFW window + main loop for SoundOrbit Windows.
+
+Includes ResourceGuardian (RAM/CPU throttle, leak brake, FPS pacing)
+and defensive try/except around the render path so driver glitches
+cannot freeze the process in a hard loop.
+"""
 
 from __future__ import annotations
 
 import os
 import sys
 import time
+import traceback
 from pathlib import Path
 
 # Help PyInstaller onefile find glfw3.dll before importing glfw
@@ -44,10 +50,21 @@ from sound_orbit_win.gpu import (  # noqa: E402
     describe_profile,
     profile_from_gl_renderer,
 )
+from sound_orbit_win.resources import (  # noqa: E402
+    FramePacer,
+    ResourceGuardian,
+    eco_bias_enabled,
+    set_process_priority_below_normal,
+)
 
 _GPU_PROFILE = build_profile()
 apply_windows_gpu_env(_GPU_PROFILE)
 print(describe_profile(_GPU_PROFILE), file=sys.stderr)
+
+# Eco by default: slightly lower scheduling priority from the start
+if eco_bias_enabled():
+    if set_process_priority_below_normal():
+        print("Process priority: BELOW_NORMAL (SOUNDORBIT_ECO=1)", file=sys.stderr)
 
 try:
     import glfw
@@ -117,11 +134,7 @@ def run() -> int:
     glfw.window_hint(glfw.OPENGL_PROFILE, glfw.OPENGL_CORE_PROFILE)
     glfw.window_hint(glfw.OPENGL_FORWARD_COMPAT, True)
     glfw.window_hint(glfw.DOUBLEBUFFER, True)
-    glfw.window_hint(glfw.SAMPLES, 0)
-    # Prefer dedicated GPU when driver exposes it (best-effort)
-    if hasattr(glfw, "OPENGL_PROFILE"):
-        pass
-    # GLFW 3.4+ : GLFW_COCOA / WIN32 — not always available in python binding
+    glfw.window_hint(glfw.SAMPLES, 0)  # MSAA off — less GPU + VRAM
 
     title0 = f"{__app_name__} {__version__} [{profile.primary}]"
     window = glfw.create_window(1280, 720, title0, None, None)
@@ -132,7 +145,11 @@ def run() -> int:
         return 1
 
     glfw.make_context_current(window)
-    glfw.swap_interval(1 if profile.vsync else 0)
+    # VSync on by default — caps FPS and reduces heat (BSOD-adjacent driver load)
+    vsync = 1 if getattr(profile, "vsync", True) else 0
+    if eco_bias_enabled():
+        vsync = 1
+    glfw.swap_interval(vsync)
 
     gl_ver = _decode_gl_str(glGetString(GL_VERSION))
     gl_renderer = _decode_gl_str(glGetString(GL_RENDERER))
@@ -141,7 +158,6 @@ def run() -> int:
     print("Vendor:", gl_vendor, file=sys.stderr)
     print("Renderer:", gl_renderer, file=sys.stderr)
 
-    # If WMI failed (UNKNOWN), recover profile from the live GL device
     if profile.primary == "UNKNOWN" or not profile.adapters or profile.detail == "unknown":
         profile = profile_from_gl_renderer(gl_renderer, gl_vendor)
         print("→ GPU profile recovered from OpenGL:", describe_profile(profile), file=sys.stderr)
@@ -154,7 +170,6 @@ def run() -> int:
             "  Settings → System → Display → Graphics → SoundOrbit → High performance",
             file=sys.stderr,
         )
-        # If we wanted NVIDIA/AMD but got Intel, lighten load to match actual device
         if "intel" in gl_renderer.lower() and profile.primary in ("NVIDIA", "AMD"):
             print("→ applying Intel ECO quality for actual GL device", file=sys.stderr)
             profile = profile_from_gl_renderer(gl_renderer, gl_vendor)
@@ -168,26 +183,51 @@ def run() -> int:
         print(
             "Tips:\n"
             "  - Update GPU drivers\n"
-            "  - SOUNDORBIT_GPU=INTEL|AMD|NVIDIA  (force WMI primary for quality profile)\n"
-            "  - SOUNDORBIT_QUALITY=low",
+            "  - SOUNDORBIT_GPU=INTEL|AMD|NVIDIA\n"
+            "  - SOUNDORBIT_QUALITY=low\n"
+            "  - SOUNDORBIT_ECO=1  (default) for lower load",
             file=sys.stderr,
         )
         glfw.terminate()
         return 1
 
+    # Resource guardian: RAM ceiling, leak growth, FPS throttle
+    base_fps = 28.0 if eco_bias_enabled() else 36.0
+    # iGPU starts more conservative
+    if getattr(profile, "is_integrated", False) or "intel" in gl_renderer.lower():
+        base_fps = min(base_fps, 24.0)
+    guardian = ResourceGuardian(base_fps=base_fps)
+    guardian.arm()
+    pacer = FramePacer(target_fps=base_fps)
+
     print(
-        f"SoundOrbit {__version__} — Linux-parity visuals: "
-        f"CRT / trails / energy ribbons / green frame / orbiting labels",
+        f"SoundOrbit {__version__} — visuals + ResourceGuardian "
+        f"(ECO={int(eco_bias_enabled())} base_fps={base_fps:.0f})",
+        file=sys.stderr,
+        flush=True,
+    )
+    st0 = guardian.state()
+    print(
+        f"[guardian] {st0.note} soft≤{st0.soft_limit_mb:.0f}MB hard≤{st0.hard_limit_mb:.0f}MB",
         file=sys.stderr,
         flush=True,
     )
 
-    state = {"renderer": renderer, "audio": audio, "profile": profile}
+    state = {
+        "renderer": renderer,
+        "audio": audio,
+        "profile": profile,
+        "guardian": guardian,
+    }
     glfw.set_window_user_pointer(window, state)
     glfw.set_key_callback(window, _key_callback)
 
     audio.start()
     last_title = 0.0
+    gl_errors = 0
+    max_gl_errors = 12  # stop spamming; still try to recover
+    rstate = guardian.state()
+
     gpu_tag = profile.primary
     if "intel" in gl_renderer.lower():
         gpu_tag = "INTEL*"
@@ -197,31 +237,129 @@ def run() -> int:
         gpu_tag = "AMD*"
 
     while not glfw.window_should_close(window):
-        w, h = glfw.get_framebuffer_size(window)
-        renderer.resize(w, h)
-        snap = audio.snapshot()
-        renderer.set_analysis(snap)
-        renderer.render()
-        glfw.swap_buffers(window)
-        glfw.poll_events()
+        # --- resource tick (may request purge) ---
+        try:
+            need_purge, rstate = guardian.tick()
+            renderer.apply_resource_state(
+                throttle=rstate.throttle,
+                trails_allowed=rstate.trails_allowed,
+                labels_allowed=rstate.labels_allowed,
+                param_update_scale=rstate.param_update_scale,
+            )
+            pacer.set_fps(rstate.target_fps)
+            if need_purge:
+                try:
+                    renderer.purge_runtime()
+                except Exception:
+                    pass
+                guardian.run_python_purge(trim=True)
+                print(
+                    f"[guardian] purge×{rstate.purge_count} {rstate.level} {rstate.note}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        except Exception as exc:
+            print(f"[guardian] tick error (ignored): {exc}", file=sys.stderr)
+
+        # Minimized / unfocused: barely spin (huge CPU/GPU save)
+        try:
+            iconified = bool(glfw.get_window_attrib(window, glfw.ICONIFIED))
+        except Exception:
+            iconified = False
+        if iconified:
+            time.sleep(0.25)
+            glfw.poll_events()
+            continue
+
+        # Frame work
+        try:
+            w, h = glfw.get_framebuffer_size(window)
+            # Clamp absurd sizes (display-cable glitches) to protect VRAM
+            w = max(1, min(int(w), 3840))
+            h = max(1, min(int(h), 2160))
+            renderer.resize(w, h)
+            snap = audio.snapshot()
+            renderer.set_analysis(snap)
+            renderer.render()
+            glfw.swap_buffers(window)
+            gl_errors = 0  # success resets counter
+        except Exception as exc:
+            gl_errors += 1
+            if gl_errors <= max_gl_errors:
+                print(f"[render] error ({gl_errors}/{max_gl_errors}): {exc}", file=sys.stderr)
+                if gl_errors == 1:
+                    traceback.print_exc(file=sys.stderr)
+            # Back off instead of hot-looping (driver stress → freezes)
+            time.sleep(min(0.5, 0.05 * gl_errors))
+            if gl_errors >= max_gl_errors:
+                print(
+                    "[render] too many GL errors — lowering load (trails off, FPS 12)",
+                    file=sys.stderr,
+                )
+                try:
+                    renderer.apply_resource_state(
+                        throttle=0.3,
+                        trails_allowed=False,
+                        labels_allowed=False,
+                        param_update_scale=0.2,
+                    )
+                    renderer.purge_runtime()
+                    pacer.set_fps(12.0)
+                    gl_errors = max_gl_errors // 2  # allow retries at low rate
+                except Exception:
+                    pass
+            snap = getattr(audio, "snapshot", lambda: None)()
+            if snap is None:
+                class _E:
+                    error = str(exc)
+                    ready = False
+                    source_name = ""
+                    bass = mid = treble = 0.0
+
+                snap = _E()
+
+        try:
+            glfw.poll_events()
+        except Exception:
+            pass
+
+        # Sleep remainder of frame budget (no busy-wait)
+        pacer.end_frame()
 
         now = time.perf_counter()
-        if now - last_title > 0.5:
+        if now - last_title > 0.6:
             last_title = now
-            if snap.error:
-                title = f"{__app_name__} [{gpu_tag}] — {snap.error}"
-            elif snap.ready:
-                title = (
-                    f"{__app_name__} {__version__} [{gpu_tag}] CRT — {snap.source_name}  "
-                    f"B{snap.bass:.2f} M{snap.mid:.2f} T{snap.treble:.2f}  "
-                    f"{profile.internal_w}x{profile.internal_h}  "
-                    f"[Esc quit | Space orbit | F11 fullscreen]"
-                )
-            else:
-                title = f"{__app_name__} [{gpu_tag}] — connecting audio…"
-            glfw.set_window_title(window, title)
+            try:
+                if getattr(snap, "error", None):
+                    title = f"{__app_name__} [{gpu_tag}] — {snap.error}"
+                elif getattr(snap, "ready", False):
+                    title = (
+                        f"{__app_name__} {__version__} [{gpu_tag}] "
+                        f"{rstate.level} {rstate.rss_mb:.0f}MB "
+                        f"{rstate.target_fps:.0f}fps thr{rstate.throttle:.2f} "
+                        f"— {snap.source_name}  "
+                        f"B{snap.bass:.2f} M{snap.mid:.2f} T{snap.treble:.2f}"
+                    )
+                else:
+                    title = f"{__app_name__} [{gpu_tag}] — connecting audio…"
+                if rstate.leak_suspect:
+                    title += " [MEM↑]"
+                glfw.set_window_title(window, title)
+            except Exception:
+                pass
 
-    audio.stop()
+    try:
+        audio.stop()
+    except Exception:
+        pass
+    try:
+        renderer.purge_runtime()
+    except Exception:
+        pass
+    try:
+        guardian.run_python_purge(trim=True)
+    except Exception:
+        pass
     glfw.terminate()
     return 0
 

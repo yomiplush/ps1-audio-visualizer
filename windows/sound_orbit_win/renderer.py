@@ -925,9 +925,17 @@ class ParticleSystem:
         self.size = np.ones(count, dtype=np.float32) * 0.08
         self.hue = np.zeros(count, dtype=np.float32)
         self._cursor = 0
+        # Reused every frame — never allocate in the hot path
+        self._buf = np.zeros((count, 7), dtype=np.float32)
+
+    def clear(self) -> None:
+        self.life[:] = 0.0
+        self.pos[:] = 0.0
+        self.vel[:] = 0.0
 
     def emit(self, n: int, energy: float, beat: float) -> None:
-        for _ in range(max(0, min(n, self.count))):
+        n = max(0, min(int(n), self.count))
+        for _ in range(n):
             i = self._cursor % self.count
             self._cursor += 1
             ang = np.random.random() * math.pi * 2
@@ -951,11 +959,12 @@ class ParticleSystem:
         self.life[self.life < 0] = 0
 
     def buffer_data(self) -> np.ndarray:
-        out = np.zeros((self.count, 7), dtype=np.float32)
+        out = self._buf
         out[:, 0:3] = self.pos
         out[:, 3] = self.life
         out[:, 4] = self.size
         out[:, 5] = self.hue
+        out[:, 6] = 0.0
         return out
 
 
@@ -991,7 +1000,7 @@ class VisualizerRenderer:
         self.crt_scanline = 0.98
         self.crt_vignette = 0.48
         self.exposure = 0.90
-        self.enable_trails = True  # never off unless profile forces
+        self.enable_trails = True
         self.frame_radius = 3.85
         self.label_radius = 4.55
         self.outer_radius = 5.9
@@ -1003,6 +1012,13 @@ class VisualizerRenderer:
         self._param_last = [""] * len(PARAM_SPECS)
         self._param_texs: list[int] = []
         self._param_tw, self._param_th = 320, 120
+        # Resource guardian knobs (updated every tick)
+        self._runtime_throttle = 1.0
+        self._runtime_trails_ok = True
+        self._runtime_labels_ok = True
+        self._runtime_param_scale = 1.0
+        self._skip_heavy_frame = False
+        self._frame_i = 0
 
         if profile is not None:
             self.internal_w = int(getattr(profile, "internal_w", self.internal_w))
@@ -1025,18 +1041,56 @@ class VisualizerRenderer:
                 self.ring_radii = tuple(radii)
             self.grid_half = int(getattr(profile, "grid_half", self.grid_half))
             self.grid_spacing = float(getattr(profile, "grid_spacing", self.grid_spacing))
-            # Trails always on for visual parity (profile can only weaken, not remove)
             if getattr(profile, "trails", True) is False:
                 self.trail_mix = min(self.trail_mix, 0.22)
             if getattr(profile, "rgb_shift", True) is False:
-                # Keep a tiny shift so CRT stack still feels active
                 self.aberration = max(self.aberration * 0.35, 0.0004)
-            # Never allow fully disabled CRT
             self.crt_scanline = max(self.crt_scanline, 0.75)
             self.crt_barrel = max(self.crt_barrel, 0.06)
             self.enable_trails = True
 
         self.particles = ParticleSystem(particle_n)
+
+    def apply_resource_state(
+        self,
+        *,
+        throttle: float = 1.0,
+        trails_allowed: bool = True,
+        labels_allowed: bool = True,
+        param_update_scale: float = 1.0,
+    ) -> None:
+        """Called by ResourceGuardian — scales GPU/CPU work without reallocating GL."""
+        self._runtime_throttle = float(np.clip(throttle, 0.25, 1.0))
+        self._runtime_trails_ok = bool(trails_allowed)
+        self._runtime_labels_ok = bool(labels_allowed)
+        self._runtime_param_scale = float(np.clip(param_update_scale, 0.15, 1.0))
+
+    def purge_runtime(self) -> None:
+        """
+        Memory pressure release: kill particles, clear trail FBOs, drop param cache.
+        Safe to call with GL context current.
+        """
+        try:
+            self.particles.clear()
+        except Exception:
+            pass
+        # Clear trail accumulation (large GPU textures)
+        if self._ready and self._fbo_trail[0]:
+            try:
+                for i in range(2):
+                    if self._fbo_trail[i]:
+                        glBindFramebuffer(GL_FRAMEBUFFER, self._fbo_trail[i])
+                        glClearColor(0.0, 0.0, 0.0, 1.0)
+                        glClear(GL_COLOR_BUFFER_BIT)
+                glBindFramebuffer(GL_FRAMEBUFFER, 0)
+            except Exception:
+                try:
+                    glBindFramebuffer(GL_FRAMEBUFFER, 0)
+                except Exception:
+                    pass
+        self._param_last = [""] * len(PARAM_SPECS)
+        self._param_timer = 0.0
+        self._trail_idx = 0
         self._spectrum = np.zeros(band_count, dtype=np.float32)
         self._analysis = AudioAnalysis()
         self._fbo_scene = 0
@@ -1398,6 +1452,8 @@ class VisualizerRenderer:
         a = self._analysis
         energy = float(np.clip(a.rms * 0.7 + a.bass * 0.5 + a.mid * 0.3, 0.0, 1.5))
         beat = float(a.beat)
+        thr = float(self._runtime_throttle)
+        self._frame_i = (self._frame_i + 1) & 0x7FFFFFFF
 
         if self._auto_rotate:
             self._angle += dt * (0.18 + energy * 0.35 + beat * 0.5)
@@ -1409,7 +1465,8 @@ class VisualizerRenderer:
             emit_n += int(8 + beat * 40)
         if a.treble > 0.35:
             emit_n += int(a.treble * 12)
-        emit_n = int(emit_n * float(self.particle_emit_scale))
+        # Throttle particle spawn under memory/CPU pressure
+        emit_n = int(emit_n * float(self.particle_emit_scale) * thr)
         if emit_n:
             self.particles.emit(emit_n, energy, beat)
         self.particles.update(dt)
@@ -1530,56 +1587,68 @@ class VisualizerRenderer:
             glBindVertexArray(vao)
             glDrawArrays(self.frame_modes[idx], 0, self.frame_counts[idx])
 
-        # Orbiting labels — premultiplied alpha (transparent bg, no black boxes)
-        glEnable(GL_BLEND)
-        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
-        glUseProgram(self.prog_label)
-        label_y = 1.55 + a.bass * 0.22 + beat * 0.10
-        label_model = mul(translation(0.0, label_y, 0.0), rotation_y(self._label_angle))
-        _u_mat4(self.prog_label, "uMVP", mul(vp, label_model))
-        _u1f(self.prog_label, "uYOffset", 0.0)
-        _u1f(self.prog_label, "uAlpha", float(0.95 + beat * 0.04))
-        _u1f(self.prog_label, "uBeat", beat)
-        _u1f(self.prog_label, "uEnergy", energy)
-        glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_2D, self._label_tex)
-        glBindVertexArray(self.label_vao)
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, self.label_vertex_count)
-
-        outer_model = mul(translation(0.0, self.outer_y + a.bass * 0.10, 0.0), rotation_y(-self._frame_angle))
-        _u_mat4(self.prog_label, "uMVP", mul(vp, outer_model))
-        _u1f(self.prog_label, "uAlpha", float(0.90 + beat * 0.06))
-        glBindTexture(GL_TEXTURE_2D, self._outer_tex)
-        glBindVertexArray(self.outer_vao)
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, self.outer_vertex_count)
-
-        # Param billboards (same premultiplied blend)
-        self._param_timer += dt
-        if self._param_timer >= self._param_interval:
-            self._param_timer = 0.0
-            self._update_params(a)
-        n_params = len(PARAM_SPECS)
-        if self._param_texs and n_params > 0:
+        # Orbiting labels — skip entirely under EMERGENCY / labels_allowed=False
+        draw_labels = bool(self._runtime_labels_ok)
+        # Under heavy throttle, draw text every other frame (cheap skip)
+        if draw_labels and thr < 0.55 and (self._frame_i & 1):
+            draw_labels = False
+        if draw_labels:
+            glEnable(GL_BLEND)
+            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
             glUseProgram(self.prog_label)
+            label_y = 1.55 + a.bass * 0.22 + beat * 0.10
+            label_model = mul(translation(0.0, label_y, 0.0), rotation_y(self._label_angle))
+            _u_mat4(self.prog_label, "uMVP", mul(vp, label_model))
             _u1f(self.prog_label, "uYOffset", 0.0)
+            _u1f(self.prog_label, "uAlpha", float(0.95 + beat * 0.04))
             _u1f(self.prog_label, "uBeat", beat)
             _u1f(self.prog_label, "uEnergy", energy)
-            _u1f(self.prog_label, "uAlpha", float(0.92 + beat * 0.05))
-            glBindVertexArray(self.param_vao)
-            py = self.param_y + a.bass * 0.18 + a.mid * 0.10 + beat * 0.06
-            for i in range(n_params):
-                ang = self._frame_angle + (i / n_params) * math.pi * 2.0
-                pos = np.array(
-                    [math.cos(ang) * self.param_radius, py, math.sin(ang) * self.param_radius],
-                    dtype=np.float32,
-                )
-                model = self._billboard_model(pos, view, scale_s=1.15)
-                _u_mat4(self.prog_label, "uMVP", mul(vp, model))
-                glActiveTexture(GL_TEXTURE0)
-                glBindTexture(GL_TEXTURE_2D, self._param_texs[i])
-                glDrawArrays(GL_TRIANGLES, 0, self.param_vertex_count)
-        # Restore standard blend for particles etc.
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_2D, self._label_tex)
+            glBindVertexArray(self.label_vao)
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, self.label_vertex_count)
+
+            outer_model = mul(
+                translation(0.0, self.outer_y + a.bass * 0.10, 0.0),
+                rotation_y(-self._frame_angle),
+            )
+            _u_mat4(self.prog_label, "uMVP", mul(vp, outer_model))
+            _u1f(self.prog_label, "uAlpha", float(0.90 + beat * 0.06))
+            glBindTexture(GL_TEXTURE_2D, self._outer_tex)
+            glBindVertexArray(self.outer_vao)
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, self.outer_vertex_count)
+
+            # Param billboards (CPU: cairo/bitmap only when interval hits)
+            interval = self._param_interval / max(self._runtime_param_scale, 0.15)
+            self._param_timer += dt
+            if self._param_timer >= interval:
+                self._param_timer = 0.0
+                self._update_params(a)
+            n_params = len(PARAM_SPECS)
+            if self._param_texs and n_params > 0:
+                glUseProgram(self.prog_label)
+                _u1f(self.prog_label, "uYOffset", 0.0)
+                _u1f(self.prog_label, "uBeat", beat)
+                _u1f(self.prog_label, "uEnergy", energy)
+                _u1f(self.prog_label, "uAlpha", float(0.92 + beat * 0.05))
+                glBindVertexArray(self.param_vao)
+                py = self.param_y + a.bass * 0.18 + a.mid * 0.10 + beat * 0.06
+                for i in range(n_params):
+                    ang = self._frame_angle + (i / n_params) * math.pi * 2.0
+                    pos = np.array(
+                        [
+                            math.cos(ang) * self.param_radius,
+                            py,
+                            math.sin(ang) * self.param_radius,
+                        ],
+                        dtype=np.float32,
+                    )
+                    model = self._billboard_model(pos, view, scale_s=1.15)
+                    _u_mat4(self.prog_label, "uMVP", mul(vp, model))
+                    glActiveTexture(GL_TEXTURE0)
+                    glBindTexture(GL_TEXTURE_2D, self._param_texs[i])
+                    glDrawArrays(GL_TRIANGLES, 0, self.param_vertex_count)
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
         glEnable(GL_CULL_FACE)
         glDepthMask(GL_TRUE)
@@ -1596,31 +1665,38 @@ class VisualizerRenderer:
         glDrawArrays(GL_POINTS, 0, self.particles.count)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
-        # ---- Trails (always) ----
-        src, dst = self._trail_idx, 1 - self._trail_idx
-        decay = float(np.clip(self.trail_decay + energy * 0.01 + beat * 0.015, 0.70, 0.92))
-        gain = float(np.clip(self.trail_scene_gain + beat * 0.05 + energy * 0.02, 0.28, 0.55))
-        zoom = float(self.trail_zoom - beat * 0.0008 - energy * 0.0004)
-        glBindFramebuffer(GL_FRAMEBUFFER, self._fbo_trail[dst])
-        glViewport(0, 0, self._fbo_w, self._fbo_h)
-        glDisable(GL_DEPTH_TEST)
-        glDisable(GL_BLEND)
-        glUseProgram(self.prog_trail)
-        _u1f(self.prog_trail, "uDecay", decay)
-        _u1f(self.prog_trail, "uSceneGain", gain)
-        _u1f(self.prog_trail, "uZoom", zoom)
-        glActiveTexture(GL_TEXTURE0)
-        glBindTexture(GL_TEXTURE_2D, self._tex_scene)
-        glActiveTexture(GL_TEXTURE1)
-        glBindTexture(GL_TEXTURE_2D, self._tex_trail[src])
-        glBindVertexArray(self.bg_vao)
-        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
-        self._trail_idx = dst
-        trail_tex = self._tex_trail[self._trail_idx]
-        trail_mix = float(np.clip(self.trail_mix + energy * 0.05 + beat * 0.05, 0.30, 0.62))
+        # ---- Trails (disabled under HARD/EMERGENCY memory pressure) ----
+        use_trails = bool(self.enable_trails and self._runtime_trails_ok)
+        if use_trails:
+            src, dst = self._trail_idx, 1 - self._trail_idx
+            decay = float(np.clip(self.trail_decay + energy * 0.01 + beat * 0.015, 0.70, 0.92))
+            gain = float(np.clip(self.trail_scene_gain + beat * 0.05 + energy * 0.02, 0.28, 0.55))
+            zoom = float(self.trail_zoom - beat * 0.0008 - energy * 0.0004)
+            glBindFramebuffer(GL_FRAMEBUFFER, self._fbo_trail[dst])
+            glViewport(0, 0, self._fbo_w, self._fbo_h)
+            glDisable(GL_DEPTH_TEST)
+            glDisable(GL_BLEND)
+            glUseProgram(self.prog_trail)
+            _u1f(self.prog_trail, "uDecay", decay)
+            _u1f(self.prog_trail, "uSceneGain", gain)
+            _u1f(self.prog_trail, "uZoom", zoom)
+            glActiveTexture(GL_TEXTURE0)
+            glBindTexture(GL_TEXTURE_2D, self._tex_scene)
+            glActiveTexture(GL_TEXTURE1)
+            glBindTexture(GL_TEXTURE_2D, self._tex_trail[src])
+            glBindVertexArray(self.bg_vao)
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+            self._trail_idx = dst
+            trail_tex = self._tex_trail[self._trail_idx]
+            trail_mix = float(np.clip(self.trail_mix + energy * 0.05 + beat * 0.05, 0.30, 0.62))
+        else:
+            trail_tex = self._tex_scene
+            trail_mix = 0.0
 
-        # ---- CRT post to window (always) ----
+        # ---- CRT post to window (always — scanlines are cheap) ----
         aberr = float(max(self.aberration, 0.0005) * (1.0 + energy * 0.25 + beat * 0.15))
+        if thr < 0.5:
+            aberr *= 0.5  # slightly cheaper sampling when pressured
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
         glViewport(0, 0, self.width, self.height)
         glDisable(GL_DEPTH_TEST)

@@ -55,6 +55,7 @@ class ResourceGuardian:
 
     - soft: 粒子クリア・GC・残像バッファ初期化・更新頻度低下
     - hard: さらに trails オフ、FPS を強く落とす
+    - 持続的な RSS 上昇（リーク疑い）でも hard 寄りに落とす
     """
 
     check_interval: float = 1.0
@@ -75,6 +76,8 @@ class ResourceGuardian:
     _param_scale: float = 1.0
     _note: str = "OK"
     _armed: bool = False
+    _rss_samples: list = field(default_factory=list)
+    _growth_streak: int = 0
 
     def arm(self) -> None:
         """起動直後のベースラインを記録。"""
@@ -82,6 +85,8 @@ class ResourceGuardian:
         self._baseline = max(rss, 80.0)
         self._last_check = time.monotonic()
         self._armed = True
+        self._rss_samples = [(self._last_check, rss)]
+        self._growth_streak = 0
         self._note = f"baseline {self._baseline:.0f}MB"
 
     def state(self) -> ResourceState:
@@ -99,6 +104,14 @@ class ResourceGuardian:
             note=self._note,
         )
 
+    def _growth_mb_per_min(self) -> float:
+        if len(self._rss_samples) < 3:
+            return 0.0
+        t0, r0 = self._rss_samples[0]
+        t1, r1 = self._rss_samples[-1]
+        dt = max(1e-3, t1 - t0)
+        return (r1 - r0) * (60.0 / dt)
+
     def tick(self) -> tuple[bool, ResourceState]:
         """
         定期チェック。戻り値: (purge_すべきか, 状態)
@@ -115,15 +128,26 @@ class ResourceGuardian:
         soft = min(self._baseline + self.soft_delta_mb, self.soft_abs_mb)
         hard = min(self._baseline + self.hard_delta_mb, self.hard_abs_mb)
 
+        self._rss_samples.append((now, rss))
+        if len(self._rss_samples) > 30:
+            self._rss_samples = self._rss_samples[-30:]
+        growth = self._growth_mb_per_min()
+        if growth > 50.0 and rss > self._baseline + 50:
+            self._growth_streak += 1
+        else:
+            self._growth_streak = max(0, self._growth_streak - 1)
+        leak_suspect = self._growth_streak >= 4
+
         # システム全体が逼迫している場合も抑制
         system_tight = avail < 512.0
 
         need_purge = False
-        if rss >= hard or system_tight and rss > self._baseline + 80:
+        if rss >= hard or (system_tight and rss > self._baseline + 80) or leak_suspect:
             self._throttle = 0.45
             self._trails_allowed = False
             self._param_scale = 0.35
-            self._note = f"HARD rss={rss:.0f}MB"
+            tag = "LEAK" if leak_suspect else "HARD"
+            self._note = f"{tag} rss={rss:.0f}MB grow={growth:.0f}MB/m"
             need_purge = True
         elif rss >= soft:
             self._throttle = 0.65

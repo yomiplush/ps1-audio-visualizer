@@ -49,6 +49,37 @@ $env:SOUNDORBIT_QUALITY = "low"  # low | high | ultra
 Hybrid laptops: if the title bar shows `INTEL*` while you wanted NVIDIA, use  
 **Settings → System → Display → Graphics → SoundOrbit → High performance (NVIDIA)**.
 
+## Resource management (low load / anti-leak)
+
+Windows builds **1.5.0-win+** include `ResourceGuardian`:
+
+| Watch | Action |
+|-------|--------|
+| Process Working Set (RAM) | Soft / Hard / Emergency ceilings |
+| System free RAM & memory load % | Throttle early when OS is tight |
+| Sustained RSS growth | Treat as leak-suspect → hard purge |
+| Particles / trails / labels | Scale down or disable under pressure |
+| FPS | Capped pacer (no busy-loop); lower under load |
+| Minimized window | ~4 Hz sleep — almost no GPU |
+| Process priority | BELOW_NORMAL when ECO (default) |
+
+Title bar shows: `OK|SOFT|HARD|EMERGENCY`, RSS MB, target FPS, throttle.
+
+Env:
+
+```powershell
+$env:SOUNDORBIT_ECO = "1"          # default: lower priority + FPS cap
+$env:SOUNDORBIT_ECO = "0"          # allow normal priority / higher FPS
+$env:SOUNDORBIT_FPS = "24"         # base FPS hint
+$env:SOUNDORBIT_MEM_SOFT = "500"   # soft RSS ceiling (MB)
+$env:SOUNDORBIT_MEM_HARD = "650"   # hard RSS ceiling (MB)
+$env:SOUNDORBIT_QUALITY = "low"    # fewer particles / lower internal res
+```
+
+**Note:** A normal app cannot intentionally cause a Windows BSOD; BSODs are
+almost always kernel/driver faults. We still avoid thrashing the GPU driver
+(VSync, error backoff, no allocation storms) to keep the desktop stable.
+
 ## Visual look (Linux parity) — requires **1.4.0-win+**
 
 Windows uses the same PS1 / CRT stack as Linux:
