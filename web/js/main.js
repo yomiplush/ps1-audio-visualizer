@@ -1,6 +1,5 @@
 /**
  * SoundOrbit WebGL2 Demo
- * Static site — Cloudflare Pages: root/output directory = web/
  */
 import { DemoAudio } from "./audio.js";
 import { VisualizerRenderer } from "./renderer.js";
@@ -12,53 +11,66 @@ const statusEl = document.getElementById("status");
 const hud = document.getElementById("hud");
 
 const params = new URLSearchParams(location.search);
-const debug = params.has("debug");
+const debug = params.has("debug") || true; // always show light HUD for debugging black screen
 
 function setStatus(msg) {
-  statusEl.textContent = msg;
+  if (statusEl) statusEl.textContent = msg;
 }
 
-function resize() {
+function sizeCanvas() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = Math.floor(canvas.clientWidth * dpr);
-  const h = Math.floor(canvas.clientHeight * dpr);
+  // Prefer window size — more reliable than clientWidth on some mobile browsers
+  const cssW = window.innerWidth || document.documentElement.clientWidth || 800;
+  const cssH = window.innerHeight || document.documentElement.clientHeight || 600;
+  const w = Math.max(2, Math.floor(cssW * dpr));
+  const h = Math.max(2, Math.floor(cssH * dpr));
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
     canvas.height = h;
-    if (renderer) renderer.resize(w, h);
   }
+  if (renderer) renderer.resize(w, h);
+  return { w, h };
 }
 
 const gl = canvas.getContext("webgl2", {
   alpha: false,
   antialias: false,
   depth: true,
+  stencil: false,
+  premultipliedAlpha: false,
   powerPreference: "high-performance",
+  preserveDrawingBuffer: true,
 });
 
 if (!gl) {
-  setStatus("WebGL2 not available — use a modern browser");
-  startBtn.disabled = true;
+  setStatus("WebGL2 が使えません。Chrome / Firefox / Edge の最新版をどうぞ");
+  if (startBtn) startBtn.disabled = true;
   throw new Error("WebGL2 required");
 }
 
 const audio = new DemoAudio();
 let renderer = null;
-let running = false;
+let audioLive = false; // mic/synth started
 let lastFrame = 0;
-const targetFps = 18;
-const frameMs = 1000 / targetFps;
+const frameMs = 1000 / 20;
 let frames = 0;
 let fpsT = performance.now();
-let fps = 0;
+let lastErr = "";
 
 async function boot() {
-  setStatus("Loading shaders…");
+  setStatus("シェーダー読み込み中…");
+  sizeCanvas();
   renderer = new VisualizerRenderer(gl);
   await renderer.init();
-  resize();
-  setStatus("Click Start Demo");
-  if (debug) hud.hidden = false;
+  sizeCanvas();
+  // Draw immediately (no audio) so page is never pure black
+  audio.update();
+  renderer.render(audio);
+  setStatus("Start Demo を押すとマイクに反応します");
+  if (debug) {
+    hud.hidden = false;
+    hud.textContent = "booted · WebGL2 OK";
+  }
 }
 
 function hideUi() {
@@ -67,68 +79,79 @@ function hideUi() {
 
 function loop(now) {
   requestAnimationFrame(loop);
-  if (!running || !renderer) return;
-  if (now - lastFrame < frameMs - 0.5) return;
+  if (!renderer || !renderer.ready) return;
+  if (now - lastFrame < frameMs - 1) return;
   lastFrame = now;
-  resize();
-  audio.update();
+
+  sizeCanvas();
   try {
+    audio.update();
     renderer.render(audio);
+    lastErr = "";
   } catch (e) {
     console.error(e);
-    setStatus(`Render error: ${e.message}`);
-    running = false;
+    lastErr = e.message || String(e);
+    setStatus("描画エラー: " + lastErr);
+    // keep trying next frames
   }
+
   frames++;
-  if (now - fpsT > 500) {
-    fps = (frames * 1000) / (now - fpsT);
+  if (now - fpsT > 400) {
+    const fps = (frames * 1000) / (now - fpsT);
     frames = 0;
     fpsT = now;
     if (debug) {
-      hud.textContent = `${fps.toFixed(0)} fps · ${audio.mode} · B${audio.bass.toFixed(2)} M${audio.mid.toFixed(2)} T${audio.treble.toFixed(2)}`;
+      hud.hidden = false;
+      hud.textContent =
+        `${fps.toFixed(0)}fps · ${audio.mode} · ` +
+        `B${audio.bass.toFixed(2)} M${audio.mid.toFixed(2)} T${audio.treble.toFixed(2)} · ` +
+        `${canvas.width}x${canvas.height}` +
+        (lastErr ? " · ERR " + lastErr : "");
     }
   }
 }
 
 startBtn.addEventListener("click", async () => {
   startBtn.disabled = true;
-  setStatus("Starting audio…");
+  setStatus("音声を開始…");
   try {
     try {
       await audio.startMic();
-      setStatus("Mic active — make some noise");
+      setStatus("マイク ON — 声や音を出してみて");
     } catch (micErr) {
-      console.warn("mic failed, synth fallback", micErr);
+      console.warn(micErr);
       await audio.startSynth();
-      setStatus("Mic denied — synth demo mode");
+      setStatus("マイク不可 — デモ波形で表示中");
     }
-    running = true;
+    audioLive = true;
     hideUi();
-    lastFrame = performance.now();
+    // force a frame
+    audio.update();
+    renderer.render(audio);
   } catch (e) {
     console.error(e);
-    setStatus(`Audio failed: ${e.message}`);
+    setStatus("音声エラー: " + e.message + "（映像はデモ波形で継続）");
     startBtn.disabled = false;
+    // keep rendering with procedural audio.update fallback
   }
 });
 
-// click canvas to toggle UI after start
 canvas.addEventListener("click", () => {
-  if (!running) return;
-  ui.classList.toggle("hidden");
+  if (audioLive) ui.classList.toggle("hidden");
 });
-
 window.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" || e.key === "h" || e.key === "H") {
-    ui.classList.toggle("hidden");
-  }
+  if (e.key === "Escape" || e.key === "h" || e.key === "H") ui.classList.toggle("hidden");
 });
+window.addEventListener("resize", sizeCanvas);
 
-window.addEventListener("resize", resize);
-resize();
+sizeCanvas();
 boot()
-  .then(() => requestAnimationFrame(loop))
+  .then(() => {
+    requestAnimationFrame(loop);
+  })
   .catch((e) => {
     console.error(e);
-    setStatus(`Init failed: ${e.message}`);
+    setStatus("初期化失敗: " + e.message);
+    hud.hidden = false;
+    hud.textContent = String(e);
   });

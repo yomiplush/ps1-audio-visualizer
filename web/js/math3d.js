@@ -1,31 +1,37 @@
-/** Column-major 4x4 helpers (WebGL). */
+/** Column-major 4×4 matrices for WebGL */
 
 export function perspective(fovyDeg, aspect, zNear, zFar) {
   const f = 1 / Math.tan((fovyDeg * Math.PI) / 360);
+  const nf = 1 / (zNear - zFar);
   const m = new Float32Array(16);
   m[0] = f / Math.max(aspect, 1e-6);
   m[5] = f;
-  m[10] = (zFar + zNear) / (zNear - zFar);
+  m[10] = (zFar + zNear) * nf;
   m[11] = -1;
-  m[14] = (2 * zFar * zNear) / (zNear - zFar);
+  m[14] = 2 * zFar * zNear * nf;
   return m;
 }
 
-export function lookAt(ex, ey, ez, tx, ty, tz) {
-  let fx = tx - ex, fy = ty - ey, fz = tz - ez;
-  let fl = Math.hypot(fx, fy, fz) + 1e-9;
-  fx /= fl; fy /= fl; fz /= fl;
-  // cross(f, up=0,1,0) for s — actually right = normalize(cross(f, up)) wait
-  // OpenGL lookAt: zaxis = normalize(eye-center) = -f if f is center-eye
-  // Standard: forward = normalize(center - eye)
-  let sx = fy * 0 - fz * 1, sy = fz * 0 - fx * 0, sz = fx * 1 - fy * 0;
-  let sl = Math.hypot(sx, sy, sz) + 1e-9;
-  sx /= sl; sy /= sl; sz /= sl;
-  const ux = sy * fz - sz * fy, uy = sz * fx - sx * fz, uz = sx * fy - sy * fx;
+/** eye → target, Y-up. Column-major view matrix. */
+export function lookAt(ex, ey, ez, tx, ty, tz, ux = 0, uy = 1, uz = 0) {
+  // zaxis = normalize(eye - center)  [camera looks down -Z in view space]
+  let zx = ex - tx, zy = ey - ty, zz = ez - tz;
+  let len = Math.hypot(zx, zy, zz) || 1;
+  zx /= len; zy /= len; zz /= len;
+  // xaxis = normalize(cross(up, zaxis))
+  let xx = uy * zz - uz * zy;
+  let xy = uz * zx - ux * zz;
+  let xz = ux * zy - uy * zx;
+  len = Math.hypot(xx, xy, xz) || 1;
+  xx /= len; xy /= len; xz /= len;
+  // yaxis = cross(zaxis, xaxis)
+  const yx = zy * xz - zz * xy;
+  const yy = zz * xx - zx * xz;
+  const yz = zx * xy - zy * xx;
   const m = new Float32Array(16);
-  m[0] = sx; m[4] = sy; m[8] = sz; m[12] = -(sx * ex + sy * ey + sz * ez);
-  m[1] = ux; m[5] = uy; m[9] = uz; m[13] = -(ux * ex + uy * ey + uz * ez);
-  m[2] = -fx; m[6] = -fy; m[10] = -fz; m[14] = fx * ex + fy * ey + fz * ez;
+  m[0] = xx; m[4] = xy; m[8] = xz; m[12] = -(xx * ex + xy * ey + xz * ez);
+  m[1] = yx; m[5] = yy; m[9] = yz; m[13] = -(yx * ex + yy * ey + yz * ez);
+  m[2] = zx; m[6] = zy; m[10] = zz; m[14] = -(zx * ex + zy * ey + zz * ez);
   m[3] = 0; m[7] = 0; m[11] = 0; m[15] = 1;
   return m;
 }
@@ -35,10 +41,10 @@ export function mul(a, b) {
   for (let c = 0; c < 4; c++) {
     for (let row = 0; row < 4; row++) {
       r[c * 4 + row] =
-        a[0 * 4 + row] * b[c * 4 + 0] +
-        a[1 * 4 + row] * b[c * 4 + 1] +
-        a[2 * 4 + row] * b[c * 4 + 2] +
-        a[3 * 4 + row] * b[c * 4 + 3];
+        a[row] * b[c * 4] +
+        a[4 + row] * b[c * 4 + 1] +
+        a[8 + row] * b[c * 4 + 2] +
+        a[12 + row] * b[c * 4 + 3];
     }
   }
   return r;
