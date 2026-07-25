@@ -175,6 +175,13 @@ def run() -> int:
         glfw.terminate()
         return 1
 
+    print(
+        f"SoundOrbit {__version__} — Linux-parity visuals: "
+        f"CRT / trails / energy ribbons / green frame / orbiting labels",
+        file=sys.stderr,
+        flush=True,
+    )
+
     state = {"renderer": renderer, "audio": audio, "profile": profile}
     glfw.set_window_user_pointer(window, state)
     glfw.set_key_callback(window, _key_callback)
@@ -205,7 +212,7 @@ def run() -> int:
                 title = f"{__app_name__} [{gpu_tag}] — {snap.error}"
             elif snap.ready:
                 title = (
-                    f"{__app_name__} [{gpu_tag}] — {snap.source_name}  "
+                    f"{__app_name__} {__version__} [{gpu_tag}] CRT — {snap.source_name}  "
                     f"B{snap.bass:.2f} M{snap.mid:.2f} T{snap.treble:.2f}  "
                     f"{profile.internal_w}x{profile.internal_h}  "
                     f"[Esc quit | Space orbit | F11 fullscreen]"

@@ -24,7 +24,7 @@ class GpuProfile:
     adapters: list[GpuAdapter] = field(default_factory=list)
     detail: str = ""
     is_integrated: bool = False
-    # Render quality
+    # Render quality (aligned with Linux CRT / PS1 look)
     internal_w: int = 240
     internal_h: int = 180
     particle_count: int = 400
@@ -36,6 +36,15 @@ class GpuProfile:
     crt_scanline: float = 0.92
     crt_vignette: float = 0.42
     exposure: float = 0.88
+    aberration: float = 0.0010
+    rgb_shift: bool = True
+    trails: bool = True
+    orb_stacks: int = 16
+    orb_slices: int = 22
+    ring_segments: int = 160
+    ring_radii: tuple[float, ...] = (2.0, 4.0, 5.5)
+    grid_half: int = 12
+    grid_spacing: float = 0.85
     vsync: bool = True
     note: str = ""
 
@@ -180,39 +189,52 @@ def build_profile(adapters: Optional[list[GpuAdapter]] = None) -> GpuProfile:
     )
 
     if primary.vendor == "NVIDIA":
-        # Discrete NVIDIA: higher quality, full effects
+        # Discrete NVIDIA: higher quality, full effects (≈ Linux high/ultra)
         if not primary.is_integrated:
             p.internal_w, p.internal_h = 320, 240
             p.particle_count = 520
             p.particle_emit_scale = 0.70
             p.trail_mix = 0.36
             p.trail_decay = 0.80
+            p.aberration = 0.0012
+            p.rgb_shift = True
+            p.orb_stacks, p.orb_slices = 20, 28
+            p.ring_segments = 200
+            p.ring_radii = (2.0, 3.5, 5.0, 6.2)
+            p.grid_half, p.grid_spacing = 16, 0.75
             p.note += " | NVIDIA dGPU profile"
         else:
             p.note += " | NVIDIA profile"
-        # Driver hints (harmless on pure NVIDIA desktops)
         os.environ.setdefault("__GL_THREADED_OPTIMIZATIONS", "1")
         os.environ.setdefault("__GL_SHADER_DISK_CACHE", "1")
 
     elif primary.vendor == "AMD":
         if primary.is_integrated:
-            # Ryzen iGPU / Vega graphics — keep ECO-ish
             p.internal_w, p.internal_h = 240, 180
             p.particle_count = 320
             p.particle_emit_scale = 0.45
             p.trail_mix = 0.28
             p.crt_scanline = 0.85
+            p.aberration = 0.0
+            p.rgb_shift = False
+            p.orb_stacks, p.orb_slices = 14, 18
+            p.ring_segments = 120
+            p.ring_radii = (2.0, 4.0, 5.5)
+            p.grid_half = 12
             p.note += " | AMD iGPU / APU profile (ECO)"
         else:
             p.internal_w, p.internal_h = 320, 240
             p.particle_count = 480
             p.particle_emit_scale = 0.65
             p.trail_mix = 0.34
+            p.aberration = 0.0010
+            p.rgb_shift = True
+            p.orb_stacks, p.orb_slices = 16, 22
+            p.ring_segments = 160
             p.note += " | AMD dGPU profile"
 
     elif primary.vendor == "INTEL":
         if primary.is_integrated:
-            # HD / UHD / Iris — lighter load (user had HD 620)
             p.internal_w, p.internal_h = 200, 150
             p.particle_count = 220
             p.particle_emit_scale = 0.32
@@ -221,12 +243,19 @@ def build_profile(adapters: Optional[list[GpuAdapter]] = None) -> GpuProfile:
             p.crt_scanline = 0.80
             p.crt_barrel = 0.07
             p.exposure = 0.90
+            p.aberration = 0.0
+            p.rgb_shift = False
+            p.orb_stacks, p.orb_slices = 10, 14
+            p.ring_segments = 96
+            p.ring_radii = (2.0, 4.5)
+            p.grid_half, p.grid_spacing = 8, 1.0
             p.note += " | Intel iGPU profile (ECO)"
         else:
-            # Arc
             p.internal_w, p.internal_h = 288, 216
             p.particle_count = 420
             p.particle_emit_scale = 0.55
+            p.aberration = 0.0010
+            p.rgb_shift = True
             p.note += " | Intel Arc profile"
     else:
         p.note += " | generic profile"
@@ -247,15 +276,27 @@ def build_profile(adapters: Optional[list[GpuAdapter]] = None) -> GpuProfile:
         p.particle_count = 120
         p.particle_emit_scale = 0.22
         p.trail_mix = 0.15
+        p.aberration = 0.0
+        p.rgb_shift = False
+        p.ring_segments = 72
+        p.ring_radii = (2.0, 4.5)
+        p.orb_stacks, p.orb_slices = 10, 14
     elif q == "high":
         p.internal_w, p.internal_h = 320, 240
         p.particle_count = max(p.particle_count, 500)
         p.particle_emit_scale = max(p.particle_emit_scale, 0.7)
+        p.aberration = max(p.aberration, 0.0010)
+        p.rgb_shift = True
     elif q == "ultra":
         p.internal_w, p.internal_h = 400, 300
         p.particle_count = 650
         p.particle_emit_scale = 0.85
         p.trail_mix = 0.40
+        p.aberration = 0.0012
+        p.rgb_shift = True
+        p.orb_stacks, p.orb_slices = 20, 28
+        p.ring_segments = 200
+        p.ring_radii = (2.0, 3.5, 5.0, 6.2)
 
     return p
 

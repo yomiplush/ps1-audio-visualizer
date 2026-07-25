@@ -49,6 +49,30 @@ $env:SOUNDORBIT_QUALITY = "low"  # low | high | ultra
 Hybrid laptops: if the title bar shows `INTEL*` while you wanted NVIDIA, use  
 **Settings → System → Display → Graphics → SoundOrbit → High performance (NVIDIA)**.
 
+## Visual look (Linux parity) — requires **1.4.0-win+**
+
+Windows uses the same PS1 / CRT stack as Linux:
+
+- Low internal resolution + nearest upscale (chunky pixels)
+- Phosphor trails, RGB chromatic aberration
+- CRT barrel, hard scanlines, vignette, 256-color quantize
+- **Thick energy ribbons** (not 1px lines — Intel/NVIDIA Core GL safe)
+- **Green neon frame ribbons** + tick quads
+- Orbiting labels + BASS/MID/TREBLE/RMS/PEAK/BEAT panels
+
+**Verify you have the right build:** window title shows `1.4.0-win` and `CRT`.  
+Console must print: `[SoundOrbit-Win] visual stack READY CRT+trails+ribbons+frames+labels`.
+
+If you only see bars/orb with smooth edges and no scanlines, you are running an **old Release** — rebuild or download a newer artifact:
+
+```powershell
+cd windows
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+.\dist\SoundOrbit.exe
+```
+
+Quality auto-scales from GPU. Override: `$env:SOUNDORBIT_QUALITY="ultra"`.
+
 ## Controls
 
 | Key | Action |
