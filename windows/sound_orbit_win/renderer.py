@@ -146,16 +146,38 @@ void main(){
 }
 """
 
+# Sega Saturn mesh transparency + chroma boost (shared with Linux look)
+_GLSL_SATURN_MESH = """
+vec3 boostSat(vec3 c, float amt) {
+    float l = dot(c, vec3(0.299, 0.587, 0.114));
+    return clamp(mix(vec3(l), c, 1.0 + amt), 0.0, 1.35);
+}
+bool saturnMeshKill(float alpha) {
+    if (alpha >= 0.97) return false;
+    if (alpha < 0.02) return true;
+    ivec2 ip = ivec2(floor(gl_FragCoord.xy));
+    int cell = (ip.x & 1) | ((ip.y & 1) << 1);
+    float thresh = clamp(alpha, 0.0, 1.0) * 4.0;
+    return (float(cell) + 0.5) > thresh;
+}
+float saturnMeshAlpha(float alpha) {
+    if (saturnMeshKill(alpha)) discard;
+    return alpha >= 0.97 ? alpha : 1.0;
+}
+"""
+
 BAR_FRAG = """
 #version 330 core
 in vec3 vNormal; in vec3 vWorldPos; in float vHeight; in float vBand;
 uniform vec3 uCamPos; uniform float uBands; uniform float uBeat;
 out vec4 FragColor;
+""" + _GLSL_SATURN_MESH + """
 vec3 palette(float t){
-    vec3 a=vec3(0.10,0.48,0.92), b=vec3(0.78,0.18,0.88), c=vec3(0.95,0.48,0.12);
+    vec3 a=vec3(0.02,0.55,1.00), b=vec3(0.95,0.08,0.98), c=vec3(1.00,0.42,0.02);
     float s=smoothstep(0.0,1.0,t);
     vec3 col=mix(a,b,smoothstep(0.0,0.55,s));
-    return mix(col,c,smoothstep(0.45,1.0,s));
+    col=mix(col,c,smoothstep(0.45,1.0,s));
+    return boostSat(col,0.42);
 }
 void main(){
     vec3 N=normalize(vNormal);
@@ -171,9 +193,11 @@ void main(){
     col+=base*rim*0.28;
     float top=smoothstep(0.78,1.0,vWorldPos.y/max(vHeight,0.01));
     col+=base*top*0.18;
+    col=boostSat(col,0.18);
     float peak=max(col.r,max(col.g,col.b));
-    if(peak>0.92) col*=0.92/peak;
-    FragColor=vec4(col,0.90+rim*0.06);
+    if(peak>0.95) col*=0.95/peak;
+    float a=saturnMeshAlpha(0.90+rim*0.06);
+    FragColor=vec4(col,a);
 }
 """
 
@@ -198,15 +222,17 @@ in vec3 vNormal; in vec3 vWorldPos; in vec3 vLocal;
 uniform vec3 uCamPos; uniform float uBass; uniform float uMid; uniform float uTreble;
 uniform float uBeat; uniform float uTime;
 out vec4 FragColor;
+""" + _GLSL_SATURN_MESH + """
 void main(){
     vec3 N=normalize(vNormal); vec3 V=normalize(uCamPos-vWorldPos);
     float fres=pow(1.0-max(dot(N,V),0.0),2.2);
-    vec3 base=vec3(0.2,0.7,1.0)*uBass+vec3(0.95,0.3,0.85)*uMid+vec3(1.0,0.7,0.2)*uTreble;
-    base=max(base,vec3(0.08,0.12,0.2));
+    vec3 base=vec3(0.05,0.75,1.0)*uBass+vec3(1.00,0.12,0.92)*uMid+vec3(1.00,0.62,0.05)*uTreble;
+    base=max(base,vec3(0.05,0.10,0.22));
     float bands=abs(sin(vLocal.y*12.0+uTime*4.0+uBeat*3.0));
-    base+=vec3(0.3,0.6,1.0)*bands*0.15*uTreble;
-    vec3 col=base*(0.35+fres*1.2)+vec3(1.0)*fres*0.35*(0.4+uBeat);
-    FragColor=vec4(col,0.92);
+    base+=vec3(0.15,0.70,1.0)*bands*0.18*uTreble;
+    vec3 col=base*(0.35+fres*1.2)+base*fres*0.45*(0.4+uBeat);
+    col=boostSat(col,0.40);
+    FragColor=vec4(col,saturnMeshAlpha(0.92));
 }
 """
 
@@ -229,6 +255,7 @@ void main(){
 RING_FRAG = """
 #version 330 core
 in float vAlpha; in float vT; uniform float uHue; out vec4 FragColor;
+""" + _GLSL_SATURN_MESH + """
 vec3 hsv2rgb(vec3 c){
     vec3 p=abs(fract(c.xxx+vec3(0.,2./3.,1./3.))*6.-3.);
     return c.z*mix(vec3(1.),clamp(p-1.,0.,1.),c.y);
@@ -236,8 +263,9 @@ vec3 hsv2rgb(vec3 c){
 void main(){
     float edge=smoothstep(0.0,0.15,vT)*smoothstep(1.0,0.85,vT);
     float dash=0.65+0.35*smoothstep(0.2,0.5,abs(sin(vT*3.14159265*48.0)));
-    vec3 col=hsv2rgb(vec3(fract(uHue+vT*0.15),0.85,1.0));
-    FragColor=vec4(col,vAlpha*dash*(0.7+0.3*edge));
+    vec3 col=boostSat(hsv2rgb(vec3(fract(uHue+vT*0.15),0.98,1.0)),0.25);
+    float a=saturnMeshAlpha(vAlpha*dash*(0.7+0.3*edge));
+    FragColor=vec4(col,a);
 }
 """
 
@@ -261,11 +289,12 @@ FRAME_FRAG = """
 in float vT; in float vPulse;
 uniform vec3 uColor; uniform float uAlpha; uniform float uBeat;
 out vec4 FragColor;
+""" + _GLSL_SATURN_MESH + """
 void main(){
     float dash=0.6+0.4*smoothstep(0.12,0.4,abs(sin(vT*3.14159265*40.0)));
     float a=clamp(uAlpha*vPulse*dash*(0.9+uBeat*0.25),0.0,1.0);
-    vec3 col=uColor*(0.85+vPulse*0.4+uBeat*0.2);
-    FragColor=vec4(col,a);
+    vec3 col=boostSat(uColor,0.40)*(0.85+vPulse*0.4+uBeat*0.2);
+    FragColor=vec4(col,saturnMeshAlpha(a));
 }
 """
 
@@ -284,20 +313,23 @@ void main(){
 
 LABEL_FRAG = """
 #version 330 core
-// Texture is premultiplied RGBA (rgb already * a). Blend with ONE, ONE_MINUS_SRC_ALPHA.
+// Premultiplied RGBA + Saturn mesh on soft edges
 in vec2 vUv;
 uniform sampler2D uTex;
 uniform float uAlpha; uniform float uBeat; uniform float uEnergy;
 out vec4 FragColor;
+""" + _GLSL_SATURN_MESH + """
 void main(){
     vec4 t=texture(uTex,vUv);
-    // Soft vertical fade so the band mesh edges don't show as a hard quad
     float vFade=smoothstep(0.0,0.12,vUv.y)*smoothstep(1.0,0.88,vUv.y);
     float a=t.a*uAlpha*vFade;
     if(a<0.02) discard;
     float glow=0.90+uEnergy*0.18+uBeat*0.22;
-    // Premultiplied output
-    FragColor=vec4(t.rgb*glow*uAlpha*vFade, a);
+    vec3 rgb=boostSat(t.rgb,0.28)*glow*uAlpha*vFade;
+    if(a<0.92 && saturnMeshKill(a)) discard;
+    float outA=a>=0.92?a:1.0;
+    if(a<0.92) rgb=(rgb/max(a,0.001))*outA;
+    FragColor=vec4(rgb,outA);
 }
 """
 
@@ -318,15 +350,16 @@ GRID_FRAG = """
 #version 330 core
 in float vDist; uniform float uEnergy; uniform float uBeat;
 out vec4 FragColor;
+""" + _GLSL_SATURN_MESH + """
 void main(){
     float fade=1.0-smoothstep(1.5,13.0,vDist);
-    vec3 blue=vec3(0.20,0.55,1.0);
-    vec3 cyan=vec3(0.35,0.85,1.0);
-    vec3 col=mix(blue,cyan,clamp(uEnergy*0.55+uBeat*0.25,0.0,1.0));
+    vec3 blue=vec3(0.05,0.55,1.0);
+    vec3 cyan=vec3(0.10,0.95,1.0);
+    vec3 col=boostSat(mix(blue,cyan,clamp(uEnergy*0.55+uBeat*0.25,0.0,1.0)),0.45);
     float core=1.0-smoothstep(0.0,6.0,vDist);
     float a=(0.22+uEnergy*0.28+uBeat*0.12+core*0.18)*fade;
     col*=0.85+core*0.45+uEnergy*0.25;
-    FragColor=vec4(col,clamp(a,0.0,0.95));
+    FragColor=vec4(col,saturnMeshAlpha(clamp(a,0.0,0.95)));
 }
 """
 
@@ -340,27 +373,30 @@ BG_FRAG = """
 #version 330 core
 in vec2 vUv; uniform float uTime; uniform float uEnergy; uniform float uBeat;
 out vec4 FragColor;
+""" + _GLSL_SATURN_MESH + """
 void main(){
     vec2 p=vUv-0.5; float r=length(p);
-    vec3 c0=vec3(0.012,0.018,0.040);
-    vec3 c1=vec3(0.03,0.015,0.08);
-    vec3 c2=vec3(0.0,0.045,0.075);
+    vec3 c0=vec3(0.010,0.012,0.045);
+    vec3 c1=vec3(0.05,0.008,0.12);
+    vec3 c2=vec3(0.0,0.06,0.10);
     vec3 col=mix(c0,c1,smoothstep(0.0,0.85,r));
     col=mix(col,c2,0.25+0.18*sin(uTime*0.28));
     float yBand=exp(-pow(p.y/(0.09+uEnergy*0.04+uBeat*0.03),2.0));
     float xFall=1.0-smoothstep(0.05,0.72,abs(p.x));
     float xGrad=p.x*0.5+0.5;
-    vec3 cyanA=vec3(0.12,0.55,0.80);
-    vec3 cyanB=vec3(0.18,0.42,0.85);
-    vec3 cyanC=vec3(0.25,0.70,0.68);
+    vec3 cyanA=vec3(0.05,0.70,1.00);
+    vec3 cyanB=vec3(0.15,0.35,1.00);
+    vec3 cyanC=vec3(0.10,0.95,0.75);
     vec3 hCol=mix(cyanB,cyanA,smoothstep(0.0,0.55,xGrad));
     hCol=mix(hCol,cyanC,smoothstep(0.45,1.0,xGrad));
+    hCol=boostSat(hCol,0.35);
     float pulse=0.10+uEnergy*0.22+uBeat*0.18;
     float wave=0.88+0.12*sin(p.x*10.0-uTime*1.4+uBeat*2.0);
     col+=hCol*yBand*xFall*pulse*wave;
     float core=exp(-r*r*7.5)*(0.05+uEnergy*0.12+uBeat*0.08);
-    col+=vec3(0.18,0.48,0.75)*core;
-    col+=vec3(0.35,0.12,0.40)*uBeat*0.05*(yBand*0.5+(1.0-r)*0.3);
+    col+=vec3(0.10,0.55,1.00)*core;
+    col+=vec3(0.55,0.05,0.65)*uBeat*0.06*(yBand*0.5+(1.0-r)*0.3);
+    col=boostSat(col,0.22);
     FragColor=vec4(col,1.0);
 }
 """
@@ -379,6 +415,7 @@ void main(){
 PART_FRAG = """
 #version 330 core
 in float vLife; in float vHue; out vec4 FragColor;
+""" + _GLSL_SATURN_MESH + """
 vec3 hsv2rgb(vec3 c){
     vec3 p=abs(fract(c.xxx+vec3(0.,2./3.,1./3.))*6.-3.);
     return c.z*mix(vec3(1.),clamp(p-1.,0.,1.),c.y);
@@ -386,7 +423,8 @@ vec3 hsv2rgb(vec3 c){
 void main(){
     vec2 p=gl_PointCoord*2.-1.; float d=dot(p,p);
     if(d>1.) discard;
-    FragColor=vec4(hsv2rgb(vec3(fract(vHue),0.7,1.)),exp(-d*3.2)*vLife*0.9);
+    vec3 col=boostSat(hsv2rgb(vec3(fract(vHue),0.95,1.)),0.30);
+    FragColor=vec4(col,saturnMeshAlpha(exp(-d*3.2)*vLife*0.9));
 }
 """
 
@@ -459,6 +497,18 @@ vec3 quantize256(vec3 c){
     return vec3(floor(c.r*7.0+0.5)/7.0, floor(c.g*7.0+0.5)/7.0, floor(c.b*3.0+0.5)/3.0);
 }
 
+vec3 boostSat(vec3 c, float amt){
+    float l=dot(c,vec3(0.299,0.587,0.114));
+    return clamp(mix(vec3(l),c,1.0+amt),0.0,1.0);
+}
+bool saturnMeshKill(float alpha){
+    if(alpha>=0.97) return false;
+    if(alpha<0.02) return true;
+    ivec2 ip=ivec2(floor(gl_FragCoord.xy));
+    int cell=(ip.x&1)|((ip.y&1)<<1);
+    return (float(cell)+0.5)>clamp(alpha,0.0,1.0)*4.0;
+}
+
 void main(){
     float barrel=uBarrel*(1.0+uEnergy*0.04+uBeat*0.03);
     vec2 uv=crtBarrel(vUv,barrel);
@@ -509,8 +559,16 @@ void main(){
     float alpha=clamp(frameA*vigA,0.0,1.0);
     col*=mix(vec3(1.0),vec3(0.92,1.0,0.95),edgeDist*0.10*uVignette);
 
-    col=quantize256(tonemap(col));
-    FragColor=vec4(col*alpha,1.0);
+    col=tonemap(col);
+    col=boostSat(col,0.32);
+    col=quantize256(col);
+    // Saturn mesh on CRT bezel fade (Windows window is opaque; dots still read as mesh)
+    if(alpha<0.97 && saturnMeshKill(alpha)){
+        FragColor=vec4(0.0,0.0,0.0,1.0);
+        return;
+    }
+    float outA=alpha>=0.97?1.0:1.0;
+    FragColor=vec4(col*outA,1.0);
 }
 """
 
@@ -1594,7 +1652,7 @@ class VisualizerRenderer:
         # Green neon frame ribbons
         frame_rot = rotation_y(self._frame_angle)
         frame_y = 0.15 + a.bass * 0.18
-        green = (0.20, 1.0, 0.35)
+        green = (0.05, 1.0, 0.22)  # higher chroma neon green
         glUseProgram(self.prog_frame)
         for idx, vao in enumerate(self.frame_vaos):
             y_off = frame_y + (0.0 if idx >= 3 else idx * 0.05)
