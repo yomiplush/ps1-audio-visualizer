@@ -174,6 +174,21 @@ Optional Arch package (local / Octopi):
 
 ---
 
+
+---
+
+## Mobile (Android sideload)
+
+Mic-driven PS1 CRT port (not system audio). See [`mobile/README.md`](mobile/README.md).
+
+```bash
+./mobile/android/build-apk.sh
+# → dist/SoundOrbit-Mobile-debug.apk
+adb install -r dist/SoundOrbit-Mobile-debug.apk
+```
+
+iOS IPA / Metal+MoltenVK: Phase 2 (`mobile/ios/`).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
