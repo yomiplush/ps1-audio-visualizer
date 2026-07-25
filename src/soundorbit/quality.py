@@ -62,7 +62,8 @@ _PRESETS: dict[str, QualityProfile] = {
         trail_scene_gain=0.20,
         trail_mix=0.24,
         aberration=0.0,
-        target_fps=20,
+        # PS1-ish temporal jag: low/medium sit near 15–18 fps
+        target_fps=15,
         particle_emit_scale=0.22,
     ),
     "medium": QualityProfile(
@@ -83,7 +84,7 @@ _PRESETS: dict[str, QualityProfile] = {
         trail_scene_gain=0.24,
         trail_mix=0.28,
         aberration=0.0,
-        target_fps=24,
+        target_fps=18,
         particle_emit_scale=0.40,
     ),
     "high": QualityProfile(
@@ -104,7 +105,7 @@ _PRESETS: dict[str, QualityProfile] = {
         trail_scene_gain=0.26,
         trail_mix=0.30,
         aberration=0.0010,
-        target_fps=30,
+        target_fps=20,
         particle_emit_scale=0.55,
     ),
     "ultra": QualityProfile(
@@ -125,7 +126,7 @@ _PRESETS: dict[str, QualityProfile] = {
         trail_scene_gain=0.28,
         trail_mix=0.32,
         aberration=0.0012,
-        target_fps=36,
+        target_fps=24,
         particle_emit_scale=0.70,
     ),
 }

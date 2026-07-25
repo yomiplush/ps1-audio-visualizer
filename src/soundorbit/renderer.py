@@ -1106,6 +1106,19 @@ class VisualizerRenderer:
         self.ps1_mode = True
         self.internal_w = 240
         self.internal_h = 180
+        # PS1 時間方向のジャギ: 固定ステップ dt
+        self._frame_i = 0
+        self._locked_fps: float | None = None
+        self._fixed_dt: float | None = None
+        try:
+            from soundorbit.frametime import fixed_dt, ps1_target_fps
+
+            fps = float(ps1_target_fps(self.quality.target_fps))
+            self._locked_fps = fps
+            self._fixed_dt = fixed_dt(fps)
+        except Exception:
+            self._locked_fps = 18.0
+            self._fixed_dt = 1.0 / 18.0
         self._apply_quality_params(self.quality)
         self._apply_internal_res_from_env()
 
@@ -1237,7 +1250,13 @@ class VisualizerRenderer:
 
     @property
     def target_fps(self) -> int:
-        return max(20, int(self.quality.target_fps))
+        # PS1 lock applied in window; expose raw quality floor for UI
+        try:
+            from soundorbit.frametime import ps1_target_fps
+
+            return int(ps1_target_fps(self.quality.target_fps))
+        except Exception:
+            return max(12, min(24, int(self.quality.target_fps)))
 
     @property
     def quality_label(self) -> str:
@@ -1693,9 +1712,17 @@ class VisualizerRenderer:
             return False
 
         now = time.perf_counter()
-        dt = min(0.05, now - self._last_t)
+        # PS1: fixed dt → コマ送りの動き（スムーズ補間なし）
+        if self._fixed_dt is not None:
+            dt = float(self._fixed_dt)
+        else:
+            dt = min(0.08, now - self._last_t)
         self._last_t = now
-        t = now - self._t0
+        if self._locked_fps:
+            t = float(self._frame_i) * (1.0 / float(self._locked_fps))
+        else:
+            t = now - self._t0
+        self._frame_i = getattr(self, "_frame_i", 0) + 1
         a = self._analysis
 
         energy = float(np.clip(a.rms * 0.7 + a.bass * 0.5 + a.mid * 0.3, 0.0, 1.5))

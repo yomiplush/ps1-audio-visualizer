@@ -67,6 +67,17 @@ SOUNDORBIT_GL_MODE=nvidia-wayland ./SoundOrbit-Linux-x86_64.AppImage
 SOUNDORBIT_GL_MODE=software ./SoundOrbit-Linux-x86_64.AppImage
 ```
 
+### PS1 frame lock (~15–20 fps)
+
+Motion is intentionally **stepped** (PlayStation 1 style), not smooth 60fps:
+
+| Env | Effect |
+|-----|--------|
+| *(default)* | ~15–20 fps hard lock + fixed simulation step |
+| `SOUNDORBIT_FPS=15` | Force 15 fps |
+| `SOUNDORBIT_FPS=24` | Max “smooth” still PS1-ish |
+| `SOUNDORBIT_PS1_FPS=0` | Disable PS1 bias (still quality-capped) |
+
 ### Controls (Linux)
 
 | Key | Action |

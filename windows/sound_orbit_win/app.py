@@ -50,6 +50,7 @@ from sound_orbit_win.gpu import (  # noqa: E402
     describe_profile,
     profile_from_gl_renderer,
 )
+from sound_orbit_win.frametime import ps1_target_fps  # noqa: E402
 from sound_orbit_win.resources import (  # noqa: E402
     FramePacer,
     ResourceGuardian,
@@ -191,18 +192,21 @@ def run() -> int:
         glfw.terminate()
         return 1
 
-    # Resource guardian: RAM ceiling, leak growth, FPS throttle
-    base_fps = 28.0 if eco_bias_enabled() else 36.0
-    # iGPU starts more conservative
-    if getattr(profile, "is_integrated", False) or "intel" in gl_renderer.lower():
-        base_fps = min(base_fps, 24.0)
+    # PS1-style hard FPS lock (~15–20): stepped polygon motion, low load
+    quality_hint = 16.0 if (
+        getattr(profile, "is_integrated", False) or "intel" in gl_renderer.lower()
+    ) else 20.0
+    base_fps = float(ps1_target_fps(quality_hint))
     guardian = ResourceGuardian(base_fps=base_fps)
     guardian.arm()
     pacer = FramePacer(target_fps=base_fps)
+    # Renderer uses fixed dt matching the lock (no smooth sub-frame blend)
+    if hasattr(renderer, "set_locked_fps"):
+        renderer.set_locked_fps(base_fps)
 
     print(
-        f"SoundOrbit {__version__} — visuals + ResourceGuardian "
-        f"(ECO={int(eco_bias_enabled())} base_fps={base_fps:.0f})",
+        f"SoundOrbit {__version__} — PS1 frame lock {base_fps:.0f}fps "
+        f"+ ResourceGuardian (ECO={int(eco_bias_enabled())})",
         file=sys.stderr,
         flush=True,
     )
@@ -249,7 +253,11 @@ def run() -> int:
                     labels_allowed=rstate.labels_allowed,
                     param_update_scale=rstate.param_update_scale,
                 )
-                pacer.set_fps(rstate.target_fps)
+                # PS1 ceiling: guardian may lower FPS, never raise above lock
+                locked = min(base_fps, float(rstate.target_fps))
+                pacer.set_fps(locked)
+                if hasattr(renderer, "set_locked_fps"):
+                    renderer.set_locked_fps(locked)
                 if need_purge:
                     try:
                         renderer.purge_runtime()

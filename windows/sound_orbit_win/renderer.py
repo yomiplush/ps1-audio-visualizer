@@ -1019,6 +1019,9 @@ class VisualizerRenderer:
         self._runtime_param_scale = 1.0
         self._skip_heavy_frame = False
         self._frame_i = 0
+        # Fixed timestep for PS1 stepped motion (None = use wall-clock dt)
+        self._locked_fps: float | None = 18.0
+        self._fixed_dt: float | None = 1.0 / 18.0
 
         if profile is not None:
             self.internal_w = int(getattr(profile, "internal_w", self.internal_w))
@@ -1064,6 +1067,12 @@ class VisualizerRenderer:
         self._fbo_h = 0
         self._label_tex = 0
         self._outer_tex = 0
+
+    def set_locked_fps(self, fps: float) -> None:
+        """Hard frame lock for PS1-style stepped animation."""
+        fps = float(max(10.0, min(24.0, fps)))
+        self._locked_fps = fps
+        self._fixed_dt = 1.0 / fps
 
     def apply_resource_state(
         self,
@@ -1453,9 +1462,16 @@ class VisualizerRenderer:
         if not self._ready:
             return
         now = time.perf_counter()
-        dt = min(0.05, now - self._last_t)
+        # PS1: prefer fixed dt so motion jumps frame-to-frame (no smooth blend)
+        if self._fixed_dt is not None:
+            dt = float(self._fixed_dt)
+        else:
+            dt = min(0.08, now - self._last_t)
         self._last_t = now
         t = now - self._t0
+        # Quantize display time to frame slots (removes micro-smoothness in shaders)
+        if self._locked_fps:
+            t = float(self._frame_i) * (1.0 / float(self._locked_fps))
         a = self._analysis
         energy = float(np.clip(a.rms * 0.7 + a.bass * 0.5 + a.mid * 0.3, 0.0, 1.5))
         beat = float(a.beat)

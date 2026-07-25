@@ -275,7 +275,8 @@ class ResourceGuardian:
         self._trails = True
         self._labels = True
         self._param_scale = 1.0
-        self._target_fps = 24.0 if self.eco else self.base_fps
+        # PS1 lock: never start above base (already ≤24)
+        self._target_fps = min(float(self.base_fps), 20.0 if self.eco else float(self.base_fps))
         self._level = "OK"
         self._note = "init"
         self._armed = False
@@ -388,7 +389,7 @@ class ResourceGuardian:
             self._trails = False
             self._labels = True
             self._param_scale = 0.35
-            self._target_fps = 16.0
+            self._target_fps = min(15.0, self.base_fps)
             self._note = f"HARD rss={rss:.0f} load={load:.0f}% grow={growth:.0f}"
             need_purge = True
             if not self._priority_low:
@@ -400,26 +401,25 @@ class ResourceGuardian:
             self._trails = True
             self._labels = True
             self._param_scale = 0.55
-            self._target_fps = 20.0 if self.eco else 24.0
+            self._target_fps = min(16.0, self.base_fps)
             self._note = f"SOFT rss={rss:.0f} avail={avail:.0f}"
             need_purge = True
         else:
-            # Recover slowly
+            # Recover slowly — never above PS1 base lock
             self._level = "OK"
             self._throttle = min(1.0 if not self.eco else 0.90, self._throttle + 0.04)
             self._param_scale = min(1.0, self._param_scale + 0.08)
             if rss < soft * 0.82 and not system_tight:
                 self._trails = True
                 self._labels = True
-                self._target_fps = min(self.base_fps if not self.eco else min(28.0, self.base_fps), self._target_fps + 1.5)
-            self._note = f"OK rss={rss:.0f} thr={self._throttle:.2f}"
+                self._target_fps = min(self.base_fps, self._target_fps + 1.0)
+            self._note = f"OK rss={rss:.0f} thr={self._throttle:.2f} fps={self._target_fps:.0f}"
             if self._priority_low and rss < soft * 0.75 and not self.eco:
                 set_process_priority_normal()
                 self._priority_low = False
 
-        # Always eco-cap FPS a bit on Windows laptops
-        if self.eco:
-            self._target_fps = min(self._target_fps, 28.0)
+        # Hard ceiling: PS1 lock (max 24)
+        self._target_fps = min(self._target_fps, min(self.base_fps, 24.0))
 
         if need_purge and (now - self._last_purge) >= self.min_purge_interval:
             self._last_purge = now
@@ -438,29 +438,30 @@ class ResourceGuardian:
 
 
 class FramePacer:
-    """Cap FPS without busy-spin (sleep remainder of frame budget)."""
+    """Hard FPS lock (PS1-style) without busy-spin."""
 
-    def __init__(self, target_fps: float = 30.0) -> None:
-        self.target_fps = max(8.0, float(target_fps))
+    def __init__(self, target_fps: float = 18.0) -> None:
+        # Max 24 by default — no smooth 60fps
+        self.target_fps = max(10.0, min(24.0, float(target_fps)))
         self._last = time.perf_counter()
         self._frame = 0
         self.avg_frame_ms = 0.0
 
     def set_fps(self, fps: float) -> None:
-        self.target_fps = max(8.0, min(60.0, float(fps)))
+        self.target_fps = max(10.0, min(24.0, float(fps)))
 
     def end_frame(self) -> float:
-        """Sleep until next frame; returns dt seconds since previous end_frame."""
+        """Sleep until next frame slot; returns fixed-ish dt for stepped motion."""
         budget = 1.0 / self.target_fps
         elapsed = time.perf_counter() - self._last
         sleep_t = budget - elapsed
-        if sleep_t > 0.001:
-            # Never busy-wait; cap sleep if FPS target is very low
-            time.sleep(min(sleep_t, 0.12))
+        if sleep_t > 0.0005:
+            time.sleep(min(sleep_t, 0.15))
         end = time.perf_counter()
         real_dt = end - self._last
         self._last = end
         self._frame += 1
         ms = real_dt * 1000.0
-        self.avg_frame_ms = ms if self.avg_frame_ms <= 0 else (self.avg_frame_ms * 0.9 + ms * 0.1)
-        return min(0.1, max(1e-4, real_dt))
+        self.avg_frame_ms = ms if self.avg_frame_ms <= 0 else (self.avg_frame_ms * 0.85 + ms * 0.15)
+        # Report quantized dt so callers can step simulation like PS1
+        return float(budget)

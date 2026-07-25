@@ -70,11 +70,15 @@ Env:
 ```powershell
 $env:SOUNDORBIT_ECO = "1"          # default: lower priority + FPS cap
 $env:SOUNDORBIT_ECO = "0"          # allow normal priority / higher FPS
-$env:SOUNDORBIT_FPS = "24"         # base FPS hint
+$env:SOUNDORBIT_FPS = "18"         # PS1-style lock (default ~15–20; max 24)
+$env:SOUNDORBIT_PS1_FPS = "0"      # disable PS1 frame bias
 $env:SOUNDORBIT_MEM_SOFT = "500"   # soft RSS ceiling (MB)
 $env:SOUNDORBIT_MEM_HARD = "650"   # hard RSS ceiling (MB)
 $env:SOUNDORBIT_QUALITY = "low"    # fewer particles / lower internal res
 ```
+
+**PS1 frame feel:** hard-capped ~18 fps + fixed timestep (no smooth interpolation).
+Title shows target fps (e.g. `18fps`).
 
 **Note:** A normal app cannot intentionally cause a Windows BSOD; BSODs are
 almost always kernel/driver faults. We still avoid thrashing the GPU driver

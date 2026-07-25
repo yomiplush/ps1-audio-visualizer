@@ -22,6 +22,7 @@ from soundorbit.glsetup import (
     mark_gl_success,
     try_gl_autofix,
 )
+from soundorbit.frametime import interval_ms_for_fps, ps1_target_fps
 from soundorbit.quality import detect_quality
 from soundorbit.renderer import VisualizerRenderer
 from soundorbit.resources import ResourceGuardian
@@ -42,8 +43,9 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         self._tick_id = 0
         self._overlay_hide_id = 0
         self._paused = False
-        self._base_fps = max(18, int(self._quality.target_fps))
-        self._tick_interval_ms = max(12, int(round(1000.0 / self._base_fps)))
+        # PS1-style hard lock (~15–20 fps) for stepped polygon motion
+        self._base_fps = ps1_target_fps(self._quality.target_fps)
+        self._tick_interval_ms = interval_ms_for_fps(self._base_fps)
         self._res_status_counter = 0
         self._hint_visible = True  # H キーでトグル
 
@@ -373,9 +375,9 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         self._guardian.arm()
         if self._tick_id:
             GLib.source_remove(self._tick_id)
-        # 品質プロファイルの target_fps（ECO 寄り）に合わせる
-        self._base_fps = max(18, int(self._renderer.target_fps))
-        self._tick_interval_ms = max(12, int(round(1000.0 / self._base_fps)))
+        # PS1 frame lock from quality profile
+        self._base_fps = ps1_target_fps(self._renderer.target_fps)
+        self._tick_interval_ms = interval_ms_for_fps(self._base_fps)
         self._tick_id = GLib.timeout_add(self._tick_interval_ms, self._on_tick)
         q = self._quality
         r = self._renderer
@@ -421,8 +423,9 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         return True
 
     def _desired_interval_ms(self, throttle: float) -> int:
-        fps = max(12, int(self._base_fps * max(0.3, throttle)))
-        return max(16, int(round(1000.0 / fps)))
+        # Under memory pressure drop toward 12 fps; never climb above PS1 lock
+        fps = max(12, min(self._base_fps, int(self._base_fps * max(0.45, throttle) + 0.5)))
+        return interval_ms_for_fps(fps)
 
     def _on_tick(self) -> bool:
         if not self._gl_ready:
