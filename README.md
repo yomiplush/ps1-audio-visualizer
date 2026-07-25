@@ -67,6 +67,15 @@ SOUNDORBIT_GL_MODE=nvidia-wayland ./SoundOrbit-Linux-x86_64.AppImage
 SOUNDORBIT_GL_MODE=software ./SoundOrbit-Linux-x86_64.AppImage
 ```
 
+### Visual parity (Linux ↔ Windows)
+
+Linux **1.5.1+** matches the Windows look reverse-ported from the Win CRT stack:
+
+- Thick **energy ribbons** + **green neon frame** (not 1px lines)
+- Strong CRT scanlines / trails / 256-color
+- Premultiplied transparent orbiting labels
+- PS1 frame lock (~15–20 fps)
+
 ### PS1 frame lock (~15–20 fps)
 
 Motion is intentionally **stepped** (PlayStation 1 style), not smooth 60fps:

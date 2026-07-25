@@ -272,26 +272,22 @@ void main() {
 }
 """
 
+# Thick ribbon rings (Windows reverse-port) — TRIANGLE_STRIP, always visible
 RING_VERT = """
 #version 330 core
-layout(location = 0) in vec3 aPos;
-
+layout(location = 0) in vec3 aPos;   // world x,y,z on vertical band
+layout(location = 1) in float aT;    // 0..1 around ring
 uniform mat4 uMVP;
 uniform float uTime;
 uniform float uEnergy;
 uniform float uPhase;
-
 out float vAlpha;
 out float vT;
-
 void main() {
-    float t = aPos.z; // 0..1 along ring stored in z
-    vT = t;
-    float wave = sin(t * 40.0 - uTime * 6.0 + uPhase) * 0.15 * uEnergy;
-    vec3 pos = vec3(aPos.x, aPos.y + wave, 0.0);
-    // aPos.xy is already on circle in xz, rebuild
-    pos = vec3(aPos.x, wave, aPos.y);
-    vAlpha = 0.25 + uEnergy * 0.55;
+    vT = aT;
+    float wave = sin(aT * 40.0 - uTime * 6.0 + uPhase) * 0.18 * uEnergy;
+    vec3 pos = aPos + vec3(0.0, wave, 0.0);
+    vAlpha = 0.55 + uEnergy * 0.45;
     gl_Position = uMVP * vec4(pos, 1.0);
 }
 """
@@ -302,15 +298,15 @@ in float vAlpha;
 in float vT;
 uniform float uHue;
 out vec4 FragColor;
-
 vec3 hsv2rgb(vec3 c) {
     vec3 p = abs(fract(c.xxx + vec3(0.0, 2.0/3.0, 1.0/3.0)) * 6.0 - 3.0);
     return c.z * mix(vec3(1.0), clamp(p - 1.0, 0.0, 1.0), c.y);
 }
-
 void main() {
-    vec3 col = hsv2rgb(vec3(fract(uHue + vT * 0.15), 0.75, 1.0));
-    FragColor = vec4(col, vAlpha);
+    float edge = smoothstep(0.0, 0.15, vT) * smoothstep(1.0, 0.85, vT);
+    float dash = 0.65 + 0.35 * smoothstep(0.2, 0.5, abs(sin(vT * 3.14159265 * 48.0)));
+    vec3 col = hsv2rgb(vec3(fract(uHue + vT * 0.15), 0.85, 1.0));
+    FragColor = vec4(col, vAlpha * dash * (0.7 + 0.3 * edge));
 }
 """
 
@@ -438,22 +434,22 @@ void main() {
 }
 """
 
-# 緑の外枠リング（中心軸まわり）
+# 緑の外枠 — 太いリボン（Windows 逆移植）
 FRAME_VERT = """
 #version 330 core
-layout(location = 0) in vec3 aPos; // x, z, t(0..1)
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in float aT;
 uniform mat4 uMVP;
-uniform float uY;
 uniform float uEnergy;
 uniform float uTime;
 uniform float uPhase;
 out float vT;
 out float vPulse;
 void main() {
-    vT = aPos.z;
-    float wave = sin(aPos.z * 48.0 - uTime * 3.5 + uPhase) * 0.012 * (0.4 + uEnergy);
-    vec3 pos = vec3(aPos.x, uY + wave, aPos.y);
-    vPulse = 0.75 + 0.25 * sin(uTime * 4.0 + aPos.z * 20.0);
+    vT = aT;
+    float wave = sin(aT * 48.0 - uTime * 3.5 + uPhase) * 0.02 * (0.5 + uEnergy);
+    vec3 pos = aPos + vec3(0.0, wave, 0.0);
+    vPulse = 0.8 + 0.2 * sin(uTime * 4.0 + aT * 20.0);
     gl_Position = uMVP * vec4(pos, 1.0);
 }
 """
@@ -467,10 +463,9 @@ uniform float uAlpha;
 uniform float uBeat;
 out vec4 FragColor;
 void main() {
-    // 点線っぽいリズム（全周は繋がったまま薄く明滅）
-    float dash = 0.55 + 0.45 * smoothstep(0.15, 0.45, abs(sin(vT * 3.14159265 * 36.0)));
-    float a = uAlpha * vPulse * dash * (0.85 + uBeat * 0.2);
-    vec3 col = uColor * (0.75 + vPulse * 0.35 + uBeat * 0.15);
+    float dash = 0.6 + 0.4 * smoothstep(0.12, 0.4, abs(sin(vT * 3.14159265 * 40.0)));
+    float a = clamp(uAlpha * vPulse * dash * (0.9 + uBeat * 0.25), 0.0, 1.0);
+    vec3 col = uColor * (0.85 + vPulse * 0.4 + uBeat * 0.2);
     FragColor = vec4(col, a);
 }
 """
@@ -493,6 +488,7 @@ void main() {
 
 LABEL_FRAG = """
 #version 330 core
+// Premultiplied RGBA texture — blend with ONE, ONE_MINUS_SRC_ALPHA
 in vec2 vUv;
 uniform sampler2D uTex;
 uniform float uAlpha;
@@ -501,11 +497,11 @@ uniform float uEnergy;
 out vec4 FragColor;
 void main() {
     vec4 t = texture(uTex, vUv);
-    if (t.a < 0.04) discard;
-    // 緑ネオン文字 + 薄いビート発光
-    float glow = 0.85 + uEnergy * 0.2 + uBeat * 0.25;
-    vec3 col = t.rgb * glow;
-    FragColor = vec4(col, t.a * uAlpha);
+    float vFade = smoothstep(0.0, 0.12, vUv.y) * smoothstep(1.0, 0.88, vUv.y);
+    float a = t.a * uAlpha * vFade;
+    if (a < 0.02) discard;
+    float glow = 0.90 + uEnergy * 0.18 + uBeat * 0.22;
+    FragColor = vec4(t.rgb * glow * uAlpha * vFade, a);
 }
 """
 
@@ -671,10 +667,12 @@ void main() {
     float scanEdge = abs(mod(py, 4.0) - 1.5);
     float softMask = mix(mask, mask * 0.85, smoothstep(0.5, 1.5, scanEdge));
     float s = clamp(uScanline, 0.0, 1.0);
-    float darkKeep = mix(1.0, 0.06, s);
+    // Hard CRT scanlines (match Windows reverse-port)
+    float darkKeep = mix(1.0, 0.02, s);
     col *= mix(1.0, darkKeep, softMask);
-    float roll = 0.98 + 0.02 * sin(py * 0.35 - uTime * 1.6 + uBeat * 2.0);
+    float roll = 0.97 + 0.03 * sin(py * 0.35 - uTime * 1.6 + uBeat * 2.0);
     col *= roll;
+    col *= mix(1.0, 0.88, step(1.0, mod(floor(py), 2.0)) * s * 0.5);
 
     // 3) 四隅は「黒く塗る」より「アルファで抜く」（透過ベゼル）
     vec2 vc = uvS * 2.0 - 1.0;
@@ -778,14 +776,29 @@ def _uv_sphere(stacks: int = 24, slices: int = 32) -> np.ndarray:
 
 
 def _ring_line(segments: int = 256, radius: float = 3.5) -> np.ndarray:
+    """Legacy thin ring (kept for reference). Prefer _ring_ribbon."""
     verts = []
     for i in range(segments + 1):
         t = i / segments
         ang = t * 2 * math.pi
         x = math.cos(ang) * radius
         z = math.sin(ang) * radius
-        # store x, z in xy, t in z for shader
         verts.extend([x, z, t])
+    return np.array(verts, dtype=np.float32)
+
+
+def _ring_ribbon(segments: int = 192, radius: float = 3.5, half_h: float = 0.10) -> np.ndarray:
+    """
+    Vertical ribbon around Y — TRIANGLE_STRIP.
+    Vertex: pos.xyz + t  (stride 16 bytes).
+    """
+    verts: list[float] = []
+    for i in range(segments + 1):
+        t = i / segments
+        ang = t * 2 * math.pi
+        c, s = math.cos(ang), math.sin(ang)
+        x, z = c * radius, s * radius
+        verts.extend([x, -half_h, z, t, x, half_h, z, t])
     return np.array(verts, dtype=np.float32)
 
 
@@ -799,17 +812,30 @@ def _grid_lines(half: int = 16, spacing: float = 0.75) -> np.ndarray:
     return np.array(verts, dtype=np.float32)
 
 
-def _frame_ticks(segments: int, radius: float, tick_len: float = 0.12) -> np.ndarray:
-    """外枠の短い放射状ティック（LINES）。"""
-    verts = []
+def _frame_ticks_ribbon(
+    segments: int, radius: float, tick_len: float = 0.14, half_h: float = 0.035
+) -> np.ndarray:
+    """Radial ticks as quads (TRIANGLES). Vertex: pos.xyz + t."""
+    verts: list[float] = []
     for i in range(segments):
-        ang = (i / segments) * math.pi * 2.0
+        t = i / segments
+        ang = t * math.pi * 2.0
         c, s = math.cos(ang), math.sin(ang)
         x0, z0 = c * radius, s * radius
         x1, z1 = c * (radius + tick_len), s * (radius + tick_len)
-        # x, z, t
-        verts.extend([x0, z0, i / segments, x1, z1, i / segments])
+        y0, y1 = -half_h, half_h
+        verts.extend([x0, y0, z0, t, x1, y0, z1, t, x1, y1, z1, t])
+        verts.extend([x0, y0, z0, t, x1, y1, z1, t, x0, y1, z0, t])
     return np.array(verts, dtype=np.float32)
+
+
+def _premultiply_rgba(rgba: np.ndarray) -> np.ndarray:
+    """Straight RGBA → premultiplied (avoids dark fringes on transparent text)."""
+    out = np.ascontiguousarray(rgba, dtype=np.uint8).copy()
+    a = out[:, :, 3:4].astype(np.float32) * (1.0 / 255.0)
+    rgb = out[:, :, :3].astype(np.float32)
+    out[:, :, :3] = np.clip(rgb * a + 0.5, 0, 255).astype(np.uint8)
+    return out
 
 
 def _label_ring_band(
@@ -891,11 +917,10 @@ def _make_audio_label_texture(
         rgba = np.stack([r, g, b, a], axis=-1)
         # OpenGL は下原点なので縦反転
         rgba = np.flipud(rgba)
-        return np.ascontiguousarray(rgba), width, height
+        return _premultiply_rgba(np.ascontiguousarray(rgba)), width, height
     except Exception:
-        # フォールバック: 緑の横帯に隙間を空けた簡易表示
+        # フォールバック: 透過背景 + 緑ブロック文字（ベタ帯なし）
         rgba = np.zeros((height, width, 4), dtype=np.uint8)
-        # テキスト代わりに破線パターン + 中央のブロック列
         for i, ch in enumerate(full):
             if ch == " ":
                 continue
@@ -907,7 +932,7 @@ def _make_audio_label_texture(
             rgba[y0:y1, x0:x1, 2] = 100
             rgba[y0:y1, x0:x1, 3] = 220
         rgba = np.flipud(rgba)
-        return np.ascontiguousarray(rgba), width, height
+        return _premultiply_rgba(np.ascontiguousarray(rgba)), width, height
 
 
 def _cairo_rgba_text(
@@ -953,13 +978,12 @@ def _cairo_rgba_text(
         img = np.ndarray(shape=(height, width, 4), dtype=np.uint8, buffer=buf).copy()
         b, g, r, a = img[:, :, 0], img[:, :, 1], img[:, :, 2], img[:, :, 3]
         rgba = np.stack([r, g, b, a], axis=-1)
-        return np.ascontiguousarray(np.flipud(rgba))
+        return _premultiply_rgba(np.ascontiguousarray(np.flipud(rgba)))
     except Exception:
         rgba = np.zeros((height, width, 4), dtype=np.uint8)
-        # 最低限の横線
         rgba[height // 3 : height // 3 + 4, 20:-20, 1] = 200
         rgba[height // 3 : height // 3 + 4, 20:-20, 3] = 180
-        return rgba
+        return _premultiply_rgba(rgba)
 
 
 def _unit_billboard_quad(w: float = 1.0, h: float = 0.38) -> np.ndarray:
@@ -1176,10 +1200,10 @@ class VisualizerRenderer:
             except ValueError:
                 return default
 
-        # 視認しやすい控えめ残像
-        self.trail_decay = float(np.clip(_f("SOUNDORBIT_TRAIL_DECAY", 0.78), 0.5, 0.97))
-        self.trail_scene_gain = float(np.clip(_f("SOUNDORBIT_TRAIL_GAIN", 0.28), 0.1, 0.85))
-        self.trail_mix = float(np.clip(_f("SOUNDORBIT_TRAIL_MIX", 0.32), 0.0, 0.95))
+        # Windows 版に合わせたやや強めの残像
+        self.trail_decay = float(np.clip(_f("SOUNDORBIT_TRAIL_DECAY", 0.82), 0.5, 0.97))
+        self.trail_scene_gain = float(np.clip(_f("SOUNDORBIT_TRAIL_GAIN", 0.36), 0.1, 0.85))
+        self.trail_mix = float(np.clip(_f("SOUNDORBIT_TRAIL_MIX", 0.42), 0.0, 0.95))
 
     def _apply_crt_from_env(self) -> None:
         """
@@ -1206,10 +1230,10 @@ class VisualizerRenderer:
 
         # 歪み・黒枠は控えめ（映像エリアを広く）
         # 歪みは弱め（枠外は黒ではなく透過）
-        self.crt_barrel = float(np.clip(_f("SOUNDORBIT_CRT_BARREL", 0.09), 0.0, 0.45))
-        self.crt_scanline = float(np.clip(_f("SOUNDORBIT_CRT_SCANLINE", 0.92), 0.0, 1.0))
-        # 角の透過ベゼル強度
-        self.crt_vignette = float(np.clip(_f("SOUNDORBIT_CRT_VIGNETTE", 0.42), 0.0, 1.0))
+        # Windows 版と揃えた強め CRT 既定
+        self.crt_barrel = float(np.clip(_f("SOUNDORBIT_CRT_BARREL", 0.11), 0.0, 0.45))
+        self.crt_scanline = float(np.clip(_f("SOUNDORBIT_CRT_SCANLINE", 0.98), 0.0, 1.0))
+        self.crt_vignette = float(np.clip(_f("SOUNDORBIT_CRT_VIGNETTE", 0.48), 0.0, 1.0))
 
     def apply_resource_state(
         self,
@@ -1327,22 +1351,26 @@ class VisualizerRenderer:
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 24, ctypes_offset(12))
         self.orb_vertex_count = orb.shape[0] // 6
 
-        # --- rings ---
+        # --- energy ribbons (thick, Windows reverse-port) ---
         self.ring_vaos = []
         self.ring_vbos = []
         self.ring_counts = []
-        for r in q.ring_radii:
-            ring = _ring_line(q.ring_segments, r)
+        segs_r = max(96, int(q.ring_segments))
+        for ri, r in enumerate(q.ring_radii):
+            half_h = 0.07 + ri * 0.015
+            ring = _ring_ribbon(segs_r, float(r), half_h=half_h)
             vao = glGenVertexArrays(1)
             vbo = glGenBuffers(1)
             glBindVertexArray(vao)
             glBindBuffer(GL_ARRAY_BUFFER, vbo)
             glBufferData(GL_ARRAY_BUFFER, ring.nbytes, ring, GL_STATIC_DRAW)
             glEnableVertexAttribArray(0)
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 12, None)
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 16, None)
+            glEnableVertexAttribArray(1)
+            glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 16, ctypes_offset(12))
             self.ring_vaos.append(vao)
             self.ring_vbos.append(vbo)
-            self.ring_counts.append(ring.shape[0] // 3)
+            self.ring_counts.append(ring.shape[0] // 4)
 
         # --- particles ---
         self.part_vao = glGenVertexArrays(1)
@@ -1377,41 +1405,49 @@ class VisualizerRenderer:
         glEnableVertexAttribArray(0)
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 8, None)
 
-        # --- green frame rings (inner + outer) + ticks ---
-        segs = max(128, q.ring_segments)
+        # --- green frame ribbons + tick quads ---
+        segs = max(128, segs_r)
         self.frame_vaos = []
         self.frame_vbos = []
         self.frame_counts = []
-        self.frame_modes = []  # GL_LINE_STRIP or GL_LINES
-        for r in (self.frame_radius * 0.97, self.frame_radius, self.frame_radius * 1.04):
-            ring = _ring_line(segs, r)
+        self.frame_modes = []
+        for r, hh in (
+            (self.frame_radius * 0.97, 0.06),
+            (self.frame_radius, 0.10),
+            (self.frame_radius * 1.05, 0.06),
+        ):
+            ring = _ring_ribbon(segs, r, half_h=hh)
             vao = glGenVertexArrays(1)
             vbo = glGenBuffers(1)
             glBindVertexArray(vao)
             glBindBuffer(GL_ARRAY_BUFFER, vbo)
             glBufferData(GL_ARRAY_BUFFER, ring.nbytes, ring, GL_STATIC_DRAW)
             glEnableVertexAttribArray(0)
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 12, None)
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 16, None)
+            glEnableVertexAttribArray(1)
+            glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 16, ctypes_offset(12))
             self.frame_vaos.append(vao)
             self.frame_vbos.append(vbo)
-            self.frame_counts.append(ring.shape[0] // 3)
-            self.frame_modes.append(GL_LINE_STRIP)
+            self.frame_counts.append(ring.shape[0] // 4)
+            self.frame_modes.append(GL_TRIANGLE_STRIP)
 
-        ticks = _frame_ticks(48, self.frame_radius * 1.02, 0.10)
+        ticks = _frame_ticks_ribbon(56, self.frame_radius * 1.03, 0.16, half_h=0.04)
         vao = glGenVertexArrays(1)
         vbo = glGenBuffers(1)
         glBindVertexArray(vao)
         glBindBuffer(GL_ARRAY_BUFFER, vbo)
         glBufferData(GL_ARRAY_BUFFER, ticks.nbytes, ticks, GL_STATIC_DRAW)
         glEnableVertexAttribArray(0)
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 12, None)
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 16, None)
+        glEnableVertexAttribArray(1)
+        glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, 16, ctypes_offset(12))
         self.frame_vaos.append(vao)
         self.frame_vbos.append(vbo)
-        self.frame_counts.append(ticks.shape[0] // 3)
-        self.frame_modes.append(GL_LINES)
+        self.frame_counts.append(ticks.shape[0] // 4)
+        self.frame_modes.append(GL_TRIANGLES)
 
-        # --- AUDIO VISUALIZER label band（帯を厚くして文字を大きく） ---
-        label_mesh = _label_ring_band(160, self.label_radius, 0.22)
+        # --- AUDIO VISUALIZER label band ---
+        label_mesh = _label_ring_band(192, self.label_radius, 0.28)
         self.label_vao = glGenVertexArrays(1)
         self.label_vbo = glGenBuffers(1)
         glBindVertexArray(self.label_vao)
@@ -1436,7 +1472,7 @@ class VisualizerRenderer:
         glBindTexture(GL_TEXTURE_2D, 0)
 
         # --- 外側回転軸スローガン ---
-        outer_mesh = _label_ring_band(128, self.outer_radius, 0.16)
+        outer_mesh = _label_ring_band(160, self.outer_radius, 0.20)
         self.outer_vao = glGenVertexArrays(1)
         self.outer_vbo = glGenBuffers(1)
         glBindVertexArray(self.outer_vao)
@@ -1821,22 +1857,6 @@ class VisualizerRenderer:
         glDrawArrays(GL_LINES, 0, self.grid_vertex_count)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
-        # Rings
-        glUseProgram(self.prog_ring)
-        for idx, vao in enumerate(self.ring_vaos):
-            r_model = translation(0.0, 0.15 + idx * 0.35 + a.bass * 0.2, 0.0)
-            mvp = mul(vp, r_model)
-            glUniformMatrix4fv(glGetUniformLocation(self.prog_ring, "uMVP"), 1, GL_TRUE, mvp)
-            glUniform1f(glGetUniformLocation(self.prog_ring, "uTime"), t)
-            glUniform1f(
-                glGetUniformLocation(self.prog_ring, "uEnergy"),
-                float(np.clip(energy * (1.0 - idx * 0.2) + a.treble * 0.3, 0, 1.5)),
-            )
-            glUniform1f(glGetUniformLocation(self.prog_ring, "uPhase"), idx * 1.7)
-            glUniform1f(glGetUniformLocation(self.prog_ring, "uHue"), 0.55 + idx * 0.08 + t * 0.02)
-            glBindVertexArray(vao)
-            glDrawArrays(GL_LINE_STRIP, 0, self.ring_counts[idx])
-
         # Bars (instanced)
         glBindBuffer(GL_ARRAY_BUFFER, self.bar_instance_vbo)
         glBufferSubData(GL_ARRAY_BUFFER, 0, self._bar_instances.nbytes, self._bar_instances)
@@ -1878,37 +1898,51 @@ class VisualizerRenderer:
         glBindVertexArray(self.orb_vao)
         glDrawArrays(GL_TRIANGLES, 0, self.orb_vertex_count)
 
-        # --- 緑外枠（スペクトラムを中心軸まわりで囲む）+ 外側ラベル ---
-        frame_rot = rotation_y(self._frame_angle)
-        frame_y = 0.12 + a.bass * 0.15
-        green = (0.25, 1.0, 0.40)
-        try:
-            glLineWidth(2.0)
-        except Exception:
-            pass
+        # ---- Overlays (match Windows): depth OFF so ribbons/labels always show ----
+        glDisable(GL_DEPTH_TEST)
         glDepthMask(GL_FALSE)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE)  # ネオン加算
+        glDisable(GL_CULL_FACE)
+
+        # Energy ribbons
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+        glUseProgram(self.prog_ring)
+        for idx, vao in enumerate(self.ring_vaos):
+            r_model = translation(0.0, 0.20 + idx * 0.38 + a.bass * 0.25, 0.0)
+            mvp = mul(vp, r_model)
+            glUniformMatrix4fv(glGetUniformLocation(self.prog_ring, "uMVP"), 1, GL_TRUE, mvp)
+            glUniform1f(glGetUniformLocation(self.prog_ring, "uTime"), t)
+            glUniform1f(
+                glGetUniformLocation(self.prog_ring, "uEnergy"),
+                float(np.clip(0.35 + energy * (1.0 - idx * 0.15) + a.treble * 0.4, 0, 1.8)),
+            )
+            glUniform1f(glGetUniformLocation(self.prog_ring, "uPhase"), idx * 1.7)
+            glUniform1f(glGetUniformLocation(self.prog_ring, "uHue"), 0.55 + idx * 0.08 + t * 0.02)
+            glBindVertexArray(vao)
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, self.ring_counts[idx])
+
+        # Green neon frame ribbons
+        frame_rot = rotation_y(self._frame_angle)
+        frame_y = 0.15 + a.bass * 0.18
+        green = (0.20, 1.0, 0.35)
         glUseProgram(self.prog_frame)
         for idx, vao in enumerate(self.frame_vaos):
-            y_off = frame_y + (0.0 if idx >= 3 else idx * 0.04)
+            y_off = frame_y + (0.0 if idx >= 3 else idx * 0.05)
             mvp = mul(vp, mul(frame_rot, translation(0.0, y_off, 0.0)))
             glUniformMatrix4fv(glGetUniformLocation(self.prog_frame, "uMVP"), 1, GL_TRUE, mvp)
-            glUniform1f(glGetUniformLocation(self.prog_frame, "uY"), 0.0)
             glUniform1f(glGetUniformLocation(self.prog_frame, "uEnergy"), energy)
             glUniform1f(glGetUniformLocation(self.prog_frame, "uTime"), t)
             glUniform1f(glGetUniformLocation(self.prog_frame, "uPhase"), idx * 1.3)
             glUniform3f(glGetUniformLocation(self.prog_frame, "uColor"), *green)
-            alpha = 0.45 if idx == 3 else (0.95 if idx == 1 else 0.50)
+            alpha = 0.70 if idx == 3 else (1.0 if idx == 1 else 0.75)
             glUniform1f(glGetUniformLocation(self.prog_frame, "uAlpha"), alpha)
             glUniform1f(glGetUniformLocation(self.prog_frame, "uBeat"), beat)
             glBindVertexArray(vao)
             glDrawArrays(self.frame_modes[idx], 0, self.frame_counts[idx])
 
-        # 緑線の外側を回る "AUDIO VISUALIZER"（水平・弱い縦軸公転）
-        glDisable(GL_CULL_FACE)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        # Orbiting labels — premultiplied alpha
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
         glUseProgram(self.prog_label)
-        label_y = 1.75 + a.bass * 0.2 + beat * 0.08
+        label_y = 1.55 + a.bass * 0.22 + beat * 0.10
         label_model = mul(
             translation(0.0, label_y, 0.0),
             rotation_y(self._label_angle),
@@ -1918,7 +1952,7 @@ class VisualizerRenderer:
         glUniform1f(glGetUniformLocation(self.prog_label, "uYOffset"), 0.0)
         glUniform1f(
             glGetUniformLocation(self.prog_label, "uAlpha"),
-            float(0.92 + beat * 0.06),
+            float(0.95 + beat * 0.04),
         )
         glUniform1f(glGetUniformLocation(self.prog_label, "uBeat"), beat)
         glUniform1f(glGetUniformLocation(self.prog_label, "uEnergy"), energy)
@@ -1928,18 +1962,16 @@ class VisualizerRenderer:
         glDrawArrays(GL_TRIANGLE_STRIP, 0, self.label_vertex_count)
         glBindTexture(GL_TEXTURE_2D, 0)
 
-        # 外側: "Visualized Audio World for better future™"（緑枠と逆回転）
-        outer_y = self.outer_y + a.bass * 0.08
-        outer_rot = rotation_y(-self._frame_angle)
+        outer_y = self.outer_y + a.bass * 0.10
         outer_model = mul(
             translation(0.0, outer_y, 0.0),
-            outer_rot,
+            rotation_y(-self._frame_angle),
         )
         outer_mvp = mul(vp, outer_model)
         glUniformMatrix4fv(glGetUniformLocation(self.prog_label, "uMVP"), 1, GL_TRUE, outer_mvp)
         glUniform1f(
             glGetUniformLocation(self.prog_label, "uAlpha"),
-            float(0.82 + beat * 0.08),
+            float(0.90 + beat * 0.06),
         )
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D, self._outer_tex)
@@ -1947,7 +1979,7 @@ class VisualizerRenderer:
         glDrawArrays(GL_TRIANGLE_STRIP, 0, self.outer_vertex_count)
         glBindTexture(GL_TEXTURE_2D, 0)
 
-        # パラメータ数値パネル（円周上・カメラ向きビルボード）
+        # Param billboards
         interval = self._param_interval / max(self._runtime_param_scale, 0.25)
         self._param_timer += dt
         if self._param_timer >= interval:
@@ -1962,12 +1994,11 @@ class VisualizerRenderer:
             glUniform1f(glGetUniformLocation(self.prog_label, "uEnergy"), energy)
             glUniform1f(
                 glGetUniformLocation(self.prog_label, "uAlpha"),
-                float(0.9 + beat * 0.08),
+                float(0.92 + beat * 0.05),
             )
             glBindVertexArray(self.param_vao)
             py = self.param_y + a.bass * 0.18 + a.mid * 0.10 + beat * 0.06
             for i in range(n_params):
-                # 外枠と同じ向きにゆっくり公転 + 等間隔配置
                 ang = self._frame_angle + (i / n_params) * math.pi * 2.0
                 pos = np.array(
                     [
@@ -1977,7 +2008,7 @@ class VisualizerRenderer:
                     ],
                     dtype=np.float32,
                 )
-                model = self._billboard_model(pos, view, scale_s=1.0)
+                model = self._billboard_model(pos, view, scale_s=1.15)
                 mvp = mul(vp, model)
                 glUniformMatrix4fv(
                     glGetUniformLocation(self.prog_label, "uMVP"), 1, GL_TRUE, mvp
@@ -1987,8 +2018,10 @@ class VisualizerRenderer:
                 glDrawArrays(GL_TRIANGLES, 0, self.param_vertex_count)
             glBindTexture(GL_TEXTURE_2D, 0)
 
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
         glEnable(GL_CULL_FACE)
         glDepthMask(GL_TRUE)
+        glEnable(GL_DEPTH_TEST)
 
         # Particles (additive)
         glDepthFunc(GL_LESS)
