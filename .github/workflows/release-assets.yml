@@ -1,29 +1,91 @@
-# When a version tag is pushed (v*), attach Linux AppImage (if present in dist/)
-# and always build Windows exe. Prefer using packaging scripts + this workflow together.
+# Dual-platform release: always publish BOTH
+#   - SoundOrbit-Linux-x86_64.AppImage
+#   - SoundOrbit-Windows-x64.exe
+#
+# Triggers:
+#   - push tag v*  (creates/updates the GitHub Release for that tag)
+#   - release published / edited (re-upload both assets)
+#   - workflow_dispatch (optional tag input)
 name: Release dual assets
 
 on:
   push:
     tags:
       - "v*"
+  release:
+    types: [published, edited]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to upload assets to (e.g. v1.6.0)"
+        description: "Release tag to upload assets to (e.g. v1.7.0). Empty = current tag/ref only."
         required: false
         default: ""
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-assets-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # -------------------------------------------------------------------------
+  linux-appimage:
+    name: Build Linux AppImage
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3 \
+            libfuse2 \
+            desktop-file-utils \
+            librsvg2-bin \
+            file \
+            wget \
+            ca-certificates
+
+      - name: Build AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          set -euo pipefail
+          chmod +x packaging/appimage/build.sh packaging/appimage/AppRun || true
+          ./packaging/appimage/build.sh
+          VER=$(python3 - <<'PY'
+          import re, pathlib
+          t = pathlib.Path("src/soundorbit/__init__.py").read_text()
+          m = re.search(r'__version__\s*=\s*["\']([^"\']+)', t)
+          print(m.group(1) if m else "0.0.0")
+          PY
+          )
+          test -f "dist/SoundOrbit-${VER}-x86_64.AppImage"
+          mkdir -p out
+          cp -f "dist/SoundOrbit-${VER}-x86_64.AppImage" out/SoundOrbit-Linux-x86_64.AppImage
+          chmod +x out/SoundOrbit-Linux-x86_64.AppImage
+          ls -lh out/
+          file out/SoundOrbit-Linux-x86_64.AppImage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SoundOrbit-Linux-x86_64
+          path: out/SoundOrbit-Linux-x86_64.AppImage
+          if-no-files-found: error
+
+  # -------------------------------------------------------------------------
   windows-exe:
+    name: Build Windows exe
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Build Windows exe
         shell: pwsh
         working-directory: windows
@@ -31,50 +93,84 @@ jobs:
           python -m pip install --upgrade pip wheel
           pip install -r requirements.txt
           pyinstaller --noconfirm --clean SoundOrbitWin.spec
-          Copy-Item dist\SoundOrbit.exe dist\SoundOrbit-Windows-x64.exe
+          if (-not (Test-Path "dist\SoundOrbit.exe")) {
+            throw "dist\SoundOrbit.exe missing after PyInstaller"
+          }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item -Force dist\SoundOrbit.exe dist\SoundOrbit-Windows-x64.exe
+          Get-Item dist\SoundOrbit-Windows-x64.exe | Format-List Name, Length, FullName
+
       - uses: actions/upload-artifact@v4
         with:
           name: SoundOrbit-Windows-x64
           path: windows/dist/SoundOrbit-Windows-x64.exe
+          if-no-files-found: error
 
+  # -------------------------------------------------------------------------
   publish:
-    needs: [windows-exe]
+    name: Upload both assets to GitHub Release
+    needs: [linux-appimage, windows-exe]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Download Windows artifact
+
+      - name: Download Linux AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: SoundOrbit-Linux-x86_64
+          path: out
+
+      - name: Download Windows exe
         uses: actions/download-artifact@v4
         with:
           name: SoundOrbit-Windows-x64
           path: out
-      - name: Build Linux AppImage
+
+      - name: Verify both assets exist
         run: |
-          chmod +x packaging/appimage/build.sh packaging/appimage/AppRun || true
-          ./packaging/appimage/build.sh
-          mkdir -p out
-          VER=$(python3 -c "import re,pathlib; t=pathlib.Path('src/soundorbit/__init__.py').read_text(); print(re.search(r'__version__\\s*=\\s*\"([^\"]+)\"',t).group(1))")
-          cp "dist/SoundOrbit-${VER}-x86_64.AppImage" out/SoundOrbit-Linux-x86_64.AppImage
-          cp "dist/SoundOrbit-${VER}-x86_64.AppImage" "out/SoundOrbit-${VER}-x86_64.AppImage" || true
+          set -euo pipefail
           ls -lh out/
-      - name: Resolve tag
+          test -f out/SoundOrbit-Linux-x86_64.AppImage
+          test -f out/SoundOrbit-Windows-x64.exe
+          test -s out/SoundOrbit-Linux-x86_64.AppImage
+          test -s out/SoundOrbit-Windows-x64.exe
+          echo "Both release assets present:"
+          ls -lh out/SoundOrbit-Linux-x86_64.AppImage out/SoundOrbit-Windows-x64.exe
+
+      - name: Resolve release tag
         id: tag
         run: |
+          set -euo pipefail
+          TAG=""
           if [ -n "${{ github.event.inputs.tag }}" ]; then
-            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            TAG="${{ github.event.inputs.tag }}"
+          elif [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
           elif [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "name=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "name=" >> "$GITHUB_OUTPUT"
+            TAG="${{ github.ref_name }}"
           fi
-      - name: Upload to GitHub Release
+          echo "name=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: '${TAG}'"
+
+      - name: Create / update GitHub Release with BOTH assets
         if: steps.tag.outputs.name != ''
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.name }}
+          name: SoundOrbit ${{ steps.tag.outputs.name }}
+          generate_release_notes: true
+          # Overwrite previous assets with the same names on re-run
           files: |
             out/SoundOrbit-Linux-x86_64.AppImage
             out/SoundOrbit-Windows-x64.exe
-            out/SoundOrbit-*.AppImage
-          fail_on_unmatched_files: false
+          # Fail the job if either file is missing — never ship half a release
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fail if no tag to publish
+        if: steps.tag.outputs.name == ''
+        run: |
+          echo "No release tag resolved. Push a v* tag, publish a Release, or pass workflow_dispatch.tag."
+          echo "Artifacts were still built and are available on this run."
+          exit 1

@@ -128,19 +128,29 @@ Details: [`windows/README.md`](windows/README.md)
 
 ## Release layout
 
-Each unified release (from **v1.6.0**) attaches:
+Every GitHub Release attaches **both** binaries (required):
 
 | Asset | Platform |
 |-------|----------|
 | `SoundOrbit-Linux-x86_64.AppImage` | Linux (any) |
-| `soundorbit-*-any.pkg.tar.zst` | Arch / CachyOS (Octopi / `pacman -U`) |
 | `SoundOrbit-Windows-x64.exe` | Windows |
 
-CI / maintainer builds:
+CI workflow: [`.github/workflows/release-assets.yml`](.github/workflows/release-assets.yml)  
+Builds Linux + Windows in parallel and **fails if either asset is missing**.
 
-- Linux AppImage: `packaging/appimage/build.sh`
-- Arch package: `packaging/arch/build.sh` → install with `pacman -U` / Octopi
-- Windows exe: GitHub Actions `Windows Build` on `windows-latest`
+```bash
+# Maintainer: clean tree, then tag — CI uploads both assets
+./scripts/release.sh v1.7.0
+# or
+git tag v1.7.0 && git push origin v1.7.0
+```
+
+Optional Arch package (local / Octopi):
+
+```bash
+./packaging/arch/build.sh
+# → dist/soundorbit-*-any.pkg.tar.zst
+```
 
 ---
 
