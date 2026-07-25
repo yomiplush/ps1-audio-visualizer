@@ -59,9 +59,12 @@ Hybrid laptops: if the title bar shows `INTEL*` while you wanted NVIDIA, use
 
 ## Audio notes
 
-- Uses **WASAPI loopback** on the default playback device (Windows 10/11).
-- Play music/browser audio; the visualizer reacts automatically.
-- If loopback fails, falls back to default **microphone** input (not ideal).
+- **WASAPI loopback only** — captures *what you hear* (system playback).
+- Enumerates **all output devices**: Realtek, Intel HD Audio, Bluetooth, HDMI,
+  USB headsets, NVIDIA/AMD audio, etc. Prefers the Windows **default playback** device.
+- Switches automatically if you change default output (e.g. plug in Bluetooth).
+- **Never uses the microphone** (input-only devices are ignored).
+- Console lists candidates and which loopback was opened.
 
 ## Requirements (runtime)
 
