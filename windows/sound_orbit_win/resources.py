@@ -185,7 +185,7 @@ def set_process_priority_normal() -> bool:
 
 
 def trim_working_set() -> None:
-    """Ask Windows to release unused pages (best-effort, not a leak fix)."""
+    """Ask Windows to release unused pages (best-effort). Never raise."""
     if not _is_windows():
         return
     try:
@@ -193,22 +193,12 @@ def trim_working_set() -> None:
         from ctypes import wintypes
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        # EmptyWorkingSet via psapi
         psapi = ctypes.WinDLL("psapi")
         EmptyWorkingSet = getattr(psapi, "EmptyWorkingSet", None)
         if EmptyWorkingSet is not None:
             EmptyWorkingSet.argtypes = [wintypes.HANDLE]
             EmptyWorkingSet.restype = wintypes.BOOL
             EmptyWorkingSet(kernel32.GetCurrentProcess())
-            return
-        # Fallback: SetProcessWorkingSetSize(-1, -1)
-        SetProcessWorkingSetSize = kernel32.SetProcessWorkingSetSize
-        SetProcessWorkingSetSize.argtypes = [
-            wintypes.HANDLE,
-            ctypes.c_size_t,
-            ctypes.c_size_t,
-        ]
-        SetProcessWorkingSetSize(kernel32.GetCurrentProcess(), ctypes.c_size_t(-1), ctypes.c_size_t(-1))
     except Exception:
         pass
 

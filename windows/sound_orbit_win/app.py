@@ -227,6 +227,8 @@ def run() -> int:
     gl_errors = 0
     max_gl_errors = 12  # stop spamming; still try to recover
     rstate = guardian.state()
+    # Always defined so title / except paths never UnboundLocalError
+    snap = audio.snapshot()
 
     gpu_tag = profile.primary
     if "intel" in gl_renderer.lower():
@@ -237,114 +239,122 @@ def run() -> int:
         gpu_tag = "AMD*"
 
     while not glfw.window_should_close(window):
-        # --- resource tick (may request purge) ---
         try:
-            need_purge, rstate = guardian.tick()
-            renderer.apply_resource_state(
-                throttle=rstate.throttle,
-                trails_allowed=rstate.trails_allowed,
-                labels_allowed=rstate.labels_allowed,
-                param_update_scale=rstate.param_update_scale,
-            )
-            pacer.set_fps(rstate.target_fps)
-            if need_purge:
-                try:
-                    renderer.purge_runtime()
-                except Exception:
-                    pass
-                guardian.run_python_purge(trim=True)
-                print(
-                    f"[guardian] purge×{rstate.purge_count} {rstate.level} {rstate.note}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-        except Exception as exc:
-            print(f"[guardian] tick error (ignored): {exc}", file=sys.stderr)
-
-        # Minimized / unfocused: barely spin (huge CPU/GPU save)
-        try:
-            iconified = bool(glfw.get_window_attrib(window, glfw.ICONIFIED))
-        except Exception:
-            iconified = False
-        if iconified:
-            time.sleep(0.25)
-            glfw.poll_events()
-            continue
-
-        # Frame work
-        try:
-            w, h = glfw.get_framebuffer_size(window)
-            # Clamp absurd sizes (display-cable glitches) to protect VRAM
-            w = max(1, min(int(w), 3840))
-            h = max(1, min(int(h), 2160))
-            renderer.resize(w, h)
-            snap = audio.snapshot()
-            renderer.set_analysis(snap)
-            renderer.render()
-            glfw.swap_buffers(window)
-            gl_errors = 0  # success resets counter
-        except Exception as exc:
-            gl_errors += 1
-            if gl_errors <= max_gl_errors:
-                print(f"[render] error ({gl_errors}/{max_gl_errors}): {exc}", file=sys.stderr)
-                if gl_errors == 1:
-                    traceback.print_exc(file=sys.stderr)
-            # Back off instead of hot-looping (driver stress → freezes)
-            time.sleep(min(0.5, 0.05 * gl_errors))
-            if gl_errors >= max_gl_errors:
-                print(
-                    "[render] too many GL errors — lowering load (trails off, FPS 12)",
-                    file=sys.stderr,
-                )
-                try:
-                    renderer.apply_resource_state(
-                        throttle=0.3,
-                        trails_allowed=False,
-                        labels_allowed=False,
-                        param_update_scale=0.2,
-                    )
-                    renderer.purge_runtime()
-                    pacer.set_fps(12.0)
-                    gl_errors = max_gl_errors // 2  # allow retries at low rate
-                except Exception:
-                    pass
-            snap = getattr(audio, "snapshot", lambda: None)()
-            if snap is None:
-                class _E:
-                    error = str(exc)
-                    ready = False
-                    source_name = ""
-                    bass = mid = treble = 0.0
-
-                snap = _E()
-
-        try:
-            glfw.poll_events()
-        except Exception:
-            pass
-
-        # Sleep remainder of frame budget (no busy-wait)
-        pacer.end_frame()
-
-        now = time.perf_counter()
-        if now - last_title > 0.6:
-            last_title = now
+            # --- resource tick (may request purge) ---
             try:
-                if getattr(snap, "error", None):
-                    title = f"{__app_name__} [{gpu_tag}] — {snap.error}"
-                elif getattr(snap, "ready", False):
-                    title = (
-                        f"{__app_name__} {__version__} [{gpu_tag}] "
-                        f"{rstate.level} {rstate.rss_mb:.0f}MB "
-                        f"{rstate.target_fps:.0f}fps thr{rstate.throttle:.2f} "
-                        f"— {snap.source_name}  "
-                        f"B{snap.bass:.2f} M{snap.mid:.2f} T{snap.treble:.2f}"
+                need_purge, rstate = guardian.tick()
+                renderer.apply_resource_state(
+                    throttle=rstate.throttle,
+                    trails_allowed=rstate.trails_allowed,
+                    labels_allowed=rstate.labels_allowed,
+                    param_update_scale=rstate.param_update_scale,
+                )
+                pacer.set_fps(rstate.target_fps)
+                if need_purge:
+                    try:
+                        renderer.purge_runtime()
+                    except Exception:
+                        pass
+                    try:
+                        guardian.run_python_purge(trim=True)
+                    except Exception:
+                        pass
+                    print(
+                        f"[guardian] purge×{rstate.purge_count} {rstate.level} {rstate.note}",
+                        file=sys.stderr,
+                        flush=True,
                     )
-                else:
-                    title = f"{__app_name__} [{gpu_tag}] — connecting audio…"
-                if rstate.leak_suspect:
-                    title += " [MEM↑]"
-                glfw.set_window_title(window, title)
+            except Exception as exc:
+                print(f"[guardian] tick error (ignored): {exc}", file=sys.stderr)
+
+            # Minimized: barely spin (huge CPU/GPU save)
+            try:
+                iconified = bool(glfw.get_window_attrib(window, glfw.ICONIFIED))
+            except Exception:
+                iconified = False
+            if iconified:
+                time.sleep(0.25)
+                try:
+                    glfw.poll_events()
+                except Exception:
+                    pass
+                continue
+
+            # Frame work
+            try:
+                w, h = glfw.get_framebuffer_size(window)
+                w = max(1, min(int(w), 3840))
+                h = max(1, min(int(h), 2160))
+                renderer.resize(w, h)
+                snap = audio.snapshot()
+                renderer.set_analysis(snap)
+                renderer.render()
+                glfw.swap_buffers(window)
+                gl_errors = 0
+            except Exception as exc:
+                gl_errors += 1
+                if gl_errors <= max_gl_errors:
+                    print(f"[render] error ({gl_errors}/{max_gl_errors}): {exc}", file=sys.stderr)
+                    if gl_errors == 1:
+                        traceback.print_exc(file=sys.stderr)
+                time.sleep(min(0.5, 0.05 * gl_errors))
+                if gl_errors >= max_gl_errors:
+                    print(
+                        "[render] too many GL errors — lowering load (trails off, FPS 12)",
+                        file=sys.stderr,
+                    )
+                    try:
+                        renderer.apply_resource_state(
+                            throttle=0.3,
+                            trails_allowed=False,
+                            labels_allowed=False,
+                            param_update_scale=0.2,
+                        )
+                        renderer.purge_runtime()
+                        pacer.set_fps(12.0)
+                        gl_errors = max_gl_errors // 2
+                    except Exception:
+                        pass
+                try:
+                    snap = audio.snapshot()
+                except Exception:
+                    pass
+
+            try:
+                glfw.poll_events()
+            except Exception:
+                pass
+
+            pacer.end_frame()
+
+            now = time.perf_counter()
+            if now - last_title > 0.6:
+                last_title = now
+                try:
+                    if getattr(snap, "error", None):
+                        title = f"{__app_name__} [{gpu_tag}] — {snap.error}"
+                    elif getattr(snap, "ready", False):
+                        title = (
+                            f"{__app_name__} {__version__} [{gpu_tag}] "
+                            f"{rstate.level} {rstate.rss_mb:.0f}MB "
+                            f"{rstate.target_fps:.0f}fps thr{rstate.throttle:.2f} "
+                            f"— {snap.source_name}  "
+                            f"B{snap.bass:.2f} M{snap.mid:.2f} T{snap.treble:.2f}"
+                        )
+                    else:
+                        title = f"{__app_name__} [{gpu_tag}] — connecting audio…"
+                    if getattr(rstate, "leak_suspect", False):
+                        title += " [MEM↑]"
+                    glfw.set_window_title(window, title)
+                except Exception:
+                    pass
+        except Exception as exc:
+            # Outer safety net — never let the process die from one bad frame
+            print(f"[main] unexpected (continuing): {exc}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
+            time.sleep(0.2)
+            try:
+                glfw.poll_events()
             except Exception:
                 pass
 

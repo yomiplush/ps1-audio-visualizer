@@ -1050,6 +1050,20 @@ class VisualizerRenderer:
             self.enable_trails = True
 
         self.particles = ParticleSystem(particle_n)
+        self._spectrum = np.zeros(band_count, dtype=np.float32)
+        self._analysis = AudioAnalysis()
+        # GL handles (filled in init_gl / _alloc_targets)
+        self._ready = False
+        self._fbo_scene = 0
+        self._tex_scene = 0
+        self._rbo_depth = 0
+        self._fbo_trail = [0, 0]
+        self._tex_trail = [0, 0]
+        self._trail_idx = 0
+        self._fbo_w = 0
+        self._fbo_h = 0
+        self._label_tex = 0
+        self._outer_tex = 0
 
     def apply_resource_state(
         self,
@@ -1068,18 +1082,20 @@ class VisualizerRenderer:
     def purge_runtime(self) -> None:
         """
         Memory pressure release: kill particles, clear trail FBOs, drop param cache.
-        Safe to call with GL context current.
+        Does NOT destroy GL objects (handles stay valid).
+        Safe before or after init_gl; GL clear only when context is ready.
         """
         try:
             self.particles.clear()
         except Exception:
             pass
-        # Clear trail accumulation (large GPU textures)
-        if self._ready and self._fbo_trail[0]:
+        # Clear trail accumulation textures only (keep FBO ids)
+        if getattr(self, "_ready", False) and getattr(self, "_fbo_trail", [0])[0]:
             try:
                 for i in range(2):
-                    if self._fbo_trail[i]:
-                        glBindFramebuffer(GL_FRAMEBUFFER, self._fbo_trail[i])
+                    fbo = self._fbo_trail[i] if i < len(self._fbo_trail) else 0
+                    if fbo:
+                        glBindFramebuffer(GL_FRAMEBUFFER, fbo)
                         glClearColor(0.0, 0.0, 0.0, 1.0)
                         glClear(GL_COLOR_BUFFER_BIT)
                 glBindFramebuffer(GL_FRAMEBUFFER, 0)
@@ -1088,21 +1104,12 @@ class VisualizerRenderer:
                     glBindFramebuffer(GL_FRAMEBUFFER, 0)
                 except Exception:
                     pass
-        self._param_last = [""] * len(PARAM_SPECS)
-        self._param_timer = 0.0
-        self._trail_idx = 0
-        self._spectrum = np.zeros(band_count, dtype=np.float32)
-        self._analysis = AudioAnalysis()
-        self._fbo_scene = 0
-        self._tex_scene = 0
-        self._rbo_depth = 0
-        self._fbo_trail = [0, 0]
-        self._tex_trail = [0, 0]
-        self._trail_idx = 0
-        self._fbo_w = 0
-        self._fbo_h = 0
-        self._label_tex = 0
-        self._outer_tex = 0
+        try:
+            self._param_last = [""] * len(PARAM_SPECS)
+            self._param_timer = 0.0
+            self._trail_idx = 0
+        except Exception:
+            pass
 
     def init_gl(self) -> None:
         self.prog_bar = _link(BAR_VERT, BAR_FRAG)
