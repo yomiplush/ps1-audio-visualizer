@@ -1,0 +1,19 @@
+post_install() {
+  update-desktop-database -q 2>/dev/null || true
+  gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null || true
+  echo "SoundOrbit installed."
+  echo "  Launch: sound-orbit  or  app menu 「サウンドオービット」"
+  echo "  Uninstall (Octopi or CLI): sudo pacman -R soundorbit"
+}
+
+post_upgrade() {
+  post_install
+}
+
+post_remove() {
+  update-desktop-database -q 2>/dev/null || true
+  gtk-update-icon-cache -q /usr/share/icons/hicolor 2>/dev/null || true
+  echo "SoundOrbit removed from the system."
+  echo "  Optional leftover user data: ~/.local/share/sound-orbit"
+  echo "  Optional leftover user menu (AppImage install): ~/.local/bin/sound-orbit"
+}

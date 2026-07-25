@@ -1,0 +1,66 @@
+# Maintainer: YomiPlush
+# Local / GitHub release package for Arch & CachyOS (Octopi-compatible).
+#
+# Build:
+#   ./packaging/arch/build.sh
+# Install:
+#   sudo pacman -U dist/soundorbit-*.pkg.tar.zst
+# Uninstall (Octopi or CLI):
+#   sudo pacman -R soundorbit
+
+pkgname=soundorbit
+pkgver=1.5.0
+pkgrel=1
+pkgdesc='Fullscreen 3D system-audio visualizer (サウンドオービット)'
+arch=('any')
+url='https://github.com/yomiplush/ps1-audio-visualizer'
+license=('MIT')
+depends=(
+  'python'
+  'python-gobject'
+  'python-cairo'
+  'python-numpy'
+  'python-opengl'
+  'gtk4'
+  'libadwaita'
+  'mesa'
+  'libepoxy'
+  'gobject-introspection'
+)
+optdepends=(
+  'pipewire-pulse: system audio capture via parec (recommended)'
+  'pipewire: modern audio server'
+)
+options=('!strip' '!debug')
+install=soundorbit.install
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  cd "$srcdir/$pkgname-$pkgver"
+
+  local appdir="$pkgdir/usr/share/sound-orbit"
+
+  # Application payload
+  install -d "$appdir/src/soundorbit" "$appdir/data/icons"
+  install -Dm755 sound-orbit "$appdir/sound-orbit"
+  install -Dm644 src/soundorbit/*.py -t "$appdir/src/soundorbit/"
+  install -Dm644 data/icons/io.github.yomiplush.SoundOrbit.svg \
+    "$appdir/data/icons/io.github.yomiplush.SoundOrbit.svg"
+  install -Dm644 LICENSE "$appdir/LICENSE"
+  install -Dm644 README.md "$appdir/README.md"
+
+  # /usr/bin launcher (system Python + system GTK)
+  install -Dm755 usr-bin-sound-orbit "$pkgdir/usr/bin/sound-orbit"
+
+  # Desktop entry (Exec=sound-orbit → PATH)
+  install -Dm644 share/applications/io.github.yomiplush.SoundOrbit.desktop \
+    "$pkgdir/usr/share/applications/io.github.yomiplush.SoundOrbit.desktop"
+
+  # Icon
+  install -Dm644 data/icons/io.github.yomiplush.SoundOrbit.svg \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.yomiplush.SoundOrbit.svg"
+
+  # License
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -437,8 +437,8 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
         return True
 
     def _desired_interval_ms(self, throttle: float) -> int:
-        # Under memory pressure drop toward 12 fps; never climb above PS1 lock
-        fps = max(12, min(self._base_fps, int(self._base_fps * max(0.45, throttle) + 0.5)))
+        # メモリ/排熱スロットルで FPS を落とす（下限 ~10、上限は PS1 ロック）
+        fps = max(10, min(self._base_fps, int(self._base_fps * max(0.35, throttle) + 0.5)))
         return interval_ms_for_fps(fps)
 
     def _on_tick(self) -> bool:
@@ -468,9 +468,12 @@ class SoundOrbitWindow(Adw.ApplicationWindow):
             src = os.path.basename(snap.source_name) if snap.source_name else "monitor"
             self._res_status_counter = (self._res_status_counter + 1) % 45
             if self._res_status_counter == 0 and rstate.note:
+                heat = ""
+                if rstate.temp_c is not None:
+                    heat = f"  ·  排熱 {rstate.temp_c:.0f}°C/{rstate.heat_tag}"
                 self._status.set_text(
-                    f"モニター: {src}  ·  {rstate.note}  ·  "
-                    f"thr {rstate.throttle:.2f}  purge×{rstate.purge_count}"
+                    f"モニター: {src}  ·  {rstate.note}{heat}  ·  "
+                    f"purge×{rstate.purge_count}"
                 )
             else:
                 self._status.set_text(

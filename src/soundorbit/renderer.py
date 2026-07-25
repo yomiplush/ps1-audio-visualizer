@@ -430,29 +430,29 @@ out vec4 FragColor;
 void main() {
     vec2 p = vUv - 0.5;
     float r = length(p);
-    // 外周はほぼ黒、中心付近だけ青み
-    vec3 black = vec3(0.004, 0.005, 0.010);
-    vec3 mid = vec3(0.012, 0.018, 0.040);
-    vec3 coreBlue = vec3(0.04, 0.10, 0.22);
-    float coreMask = exp(-r * r * 14.0);           // 中心に強く寄せる
-    float midMask = exp(-r * r * 5.5);
+    // 外周はほぼ黒、中心付近はもう少し明確な青み
+    vec3 black = vec3(0.003, 0.006, 0.016);
+    vec3 mid = vec3(0.010, 0.028, 0.062);
+    vec3 coreBlue = vec3(0.035, 0.14, 0.34);
+    float coreMask = exp(-r * r * 12.5);           // 中心に強く寄せる
+    float midMask = exp(-r * r * 5.0);
     vec3 col = black;
-    col = mix(col, mid, midMask * 0.85);
-    col = mix(col, coreBlue, coreMask * (0.55 + uEnergy * 0.25));
+    col = mix(col, mid, midMask * 0.90);
+    col = mix(col, coreBlue, coreMask * (0.62 + uEnergy * 0.28));
 
     // 中央水平の淡い発光（幅を狭く）
     float yBand = exp(-pow(p.y / (0.055 + uEnergy * 0.025 + uBeat * 0.02), 2.0));
     float xFall = 1.0 - smoothstep(0.02, 0.42, abs(p.x));
-    vec3 hCol = vec3(0.12, 0.32, 0.55);
-    float pulse = 0.06 + uEnergy * 0.14 + uBeat * 0.10;
+    vec3 hCol = vec3(0.10, 0.40, 0.72);
+    float pulse = 0.07 + uEnergy * 0.15 + uBeat * 0.10;
     float wave = 0.90 + 0.10 * sin(p.x * 10.0 - uTime * 1.4 + uBeat * 2.0);
     col += hCol * yBand * xFall * pulse * wave * coreMask;
 
-    col += vec3(0.08, 0.22, 0.40) * coreMask * (0.04 + uEnergy * 0.10 + uBeat * 0.06);
-    col += vec3(0.25, 0.06, 0.28) * uBeat * 0.03 * coreMask;
+    col += vec3(0.06, 0.28, 0.58) * coreMask * (0.05 + uEnergy * 0.12 + uBeat * 0.07);
+    col += vec3(0.22, 0.06, 0.32) * uBeat * 0.03 * coreMask;
     // 外側をさらに黒へ
     col *= mix(0.15, 1.0, midMask);
-    col = boostSat(col, -0.12);
+    col = boostSat(col, -0.04);
 
     FragColor = vec4(col, 1.0);
 }
@@ -531,6 +531,53 @@ void main() {
     vec3 rgb = boostSat(t.rgb, -0.06) * glow * uAlpha * vFade;
     // premultiplied
     FragColor = vec4(rgb, a);
+}
+"""
+
+# 最前面オシロ — アナログ蛍光管っぽい太いビーム（リボン + ソフトエッジ）
+OSC_VERT = """
+#version 330 core
+// aData: x (NDC), y (sample -1..1), side (-1|1)  ※absはフラグメントで（補間のため）
+layout(location = 0) in vec3 aData;
+uniform float uAmp;
+uniform float uHalfW;
+uniform float uYOffset;
+out float vSide;
+out float vAlong;
+out float vMag;
+void main() {
+    float y = clamp(aData.y * uAmp + uYOffset, -0.90, 0.90);
+    float hw = uHalfW * (1.0 + abs(aData.y) * 0.35);
+    gl_Position = vec4(aData.x, y + aData.z * hw, 0.0, 1.0);
+    vSide = aData.z;           // 線形補間 → 中心0 / 端±1
+    vAlong = aData.x * 0.5 + 0.5;
+    vMag = abs(aData.y);
+}
+"""
+
+OSC_FRAG = """
+#version 330 core
+in float vSide;
+in float vAlong;
+in float vMag;
+uniform vec3 uColor;
+uniform float uAlpha;
+uniform float uTime;
+uniform float uGlow;
+out vec4 FragColor;
+void main() {
+    float edge = abs(vSide); // 補間後に abs
+    float e = edge / max(uGlow, 0.15);
+    float beam = exp(-e * e * 2.8);
+    float core = exp(-e * e * 12.0);
+    float ends = smoothstep(0.0, 0.02, vAlong) * smoothstep(1.0, 0.98, vAlong);
+    float n = fract(sin(dot(gl_FragCoord.xy + uTime * 17.0, vec2(12.9898, 78.233))) * 43758.5453);
+    beam *= 0.92 + 0.08 * n;
+    float a = clamp((beam * 0.95 + core * 0.65) * uAlpha * ends, 0.0, 1.0);
+    vec3 phos = mix(uColor * 0.55, vec3(0.65, 1.0, 0.50), core);
+    phos += uColor * beam * 0.40;
+    // SRC_ALPHA ブレンド用（非 premult）
+    FragColor = vec4(phos, a);
 }
 """
 
@@ -1140,6 +1187,15 @@ class VisualizerRenderer:
         self.prog_post = 0
         self.prog_frame = 0
         self.prog_label = 0
+        self.prog_osc = 0
+        self.osc_vao = 0
+        self.osc_vbo = 0
+        self._wave_n = 320
+        self._waveform = np.zeros(self._wave_n, dtype=np.float32)
+        self._waveform_prev = np.zeros(self._wave_n, dtype=np.float32)
+        # ribbon: 2 verts per sample → triangle strip (x, y, side)
+        self._osc_strip = np.zeros((self._wave_n * 2, 3), dtype=np.float32)
+        self._osc_xs = np.linspace(-0.96, 0.96, self._wave_n, dtype=np.float32)
 
         # オフスクリーン（シーン + 残像 ping-pong）
         self._fbo_scene = 0
@@ -1345,6 +1401,17 @@ class VisualizerRenderer:
         self.prog_post = _link_program(POST_VERT, POST_FRAG)
         self.prog_frame = _link_program(FRAME_VERT, FRAME_FRAG)
         self.prog_label = _link_program(LABEL_VERT, LABEL_FRAG)
+        self.prog_osc = _link_program(OSC_VERT, OSC_FRAG)
+
+        # --- oscilloscope ribbon (front layer, analog beam) ---
+        self.osc_vao = glGenVertexArrays(1)
+        self.osc_vbo = glGenBuffers(1)
+        glBindVertexArray(self.osc_vao)
+        glBindBuffer(GL_ARRAY_BUFFER, self.osc_vbo)
+        glBufferData(GL_ARRAY_BUFFER, self._osc_strip.nbytes, self._osc_strip, GL_DYNAMIC_DRAW)
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 12, None)
+        glBindVertexArray(0)
 
         # --- bar unit mesh ---
         bar_data, _ = _unit_box()
@@ -1728,6 +1795,16 @@ class VisualizerRenderer:
         if analysis.spectrum is not None and analysis.spectrum.size == self.bands:
             # 追加平滑
             self._spectrum = self._spectrum * 0.35 + analysis.spectrum * 0.65
+        wave = getattr(analysis, "waveform", None)
+        if wave is not None and getattr(wave, "size", 0) > 0:
+            w = np.asarray(wave, dtype=np.float32).ravel()
+            if w.size != self._wave_n:
+                x_old = np.linspace(0.0, 1.0, max(1, w.size), dtype=np.float32)
+                x_new = np.linspace(0.0, 1.0, self._wave_n, dtype=np.float32)
+                w = np.interp(x_new, x_old, w).astype(np.float32)
+            # アナログっぽい遅い追従（残光）
+            self._waveform_prev = self._waveform.copy()
+            self._waveform = self._waveform * 0.55 + w * 0.45
 
     def toggle_rotation(self) -> None:
         self._auto_rotate = not self._auto_rotate
@@ -2173,11 +2250,86 @@ class VisualizerRenderer:
         glBindTexture(GL_TEXTURE_2D, 0)
         glActiveTexture(GL_TEXTURE0)
         glBindTexture(GL_TEXTURE_2D, 0)
+
+        # ---- 4) 最前面: オシロスコープ緑線（半透明レイヤー）----
+        self._draw_oscilloscope(energy, beat)
+
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_BLEND)
         glBindVertexArray(0)
         glUseProgram(0)
         return True
+
+    def _draw_oscilloscope(self, energy: float, beat: float) -> None:
+        """CRT 合成の上にアナログ蛍光管っぽい太い緑ビームを重ねる。"""
+        if not self.prog_osc or not self.osc_vao:
+            return
+        amp = float(0.34 + energy * 0.30 + beat * 0.16)
+        # 無音時も薄いベース波形を出して「消えた」に見えないようにする
+        y = np.clip(self._waveform * 1.35 + self._waveform_prev * 0.20, -1.0, 1.0)
+        if float(np.max(np.abs(y))) < 0.02:
+            # 待機中の微振（完全フラット回避）
+            ph = time.perf_counter() * 6.0
+            y = (0.04 * np.sin(self._osc_xs * 18.0 + ph)).astype(np.float32)
+
+        n = self._wave_n
+        strip = self._osc_strip
+        strip[0::2, 0] = self._osc_xs
+        strip[1::2, 0] = self._osc_xs
+        strip[0::2, 1] = y
+        strip[1::2, 1] = y
+        strip[0::2, 2] = -1.0
+        strip[1::2, 2] = 1.0
+        glBindBuffer(GL_ARRAY_BUFFER, self.osc_vbo)
+        glBufferSubData(GL_ARRAY_BUFFER, 0, strip.nbytes, np.ascontiguousarray(strip))
+
+        glDisable(GL_DEPTH_TEST)
+        glDepthMask(GL_FALSE)
+        glEnable(GL_BLEND)
+        # 通常αブレンド（ポストの上に確実に載せる）
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glUseProgram(self.prog_osc)
+        glUniform1f(glGetUniformLocation(self.prog_osc, "uAmp"), amp)
+        glUniform1f(glGetUniformLocation(self.prog_osc, "uYOffset"), 0.0)
+        glUniform1f(glGetUniformLocation(self.prog_osc, "uTime"), time.perf_counter())
+        glBindVertexArray(self.osc_vao)
+        loc_col = glGetUniformLocation(self.prog_osc, "uColor")
+        loc_a = glGetUniformLocation(self.prog_osc, "uAlpha")
+        loc_g = glGetUniformLocation(self.prog_osc, "uGlow")
+        loc_hw = glGetUniformLocation(self.prog_osc, "uHalfW")
+        count = n * 2
+
+        # 1) 広い外側グロー
+        glUniform1f(loc_hw, 0.070 + beat * 0.015)
+        glUniform1f(loc_g, 1.25)
+        glUniform3f(loc_col, 0.12, 0.75, 0.30)
+        glUniform1f(loc_a, 0.35 + energy * 0.12)
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, count)
+
+        # 2) 中間ビーム（太め）
+        glUniform1f(loc_hw, 0.040 + energy * 0.010)
+        glUniform1f(loc_g, 1.0)
+        glUniform3f(loc_col, 0.20, 0.98, 0.40)
+        glUniform1f(loc_a, 0.55 + energy * 0.12 + beat * 0.08)
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, count)
+
+        # 3) 明るいコア
+        glUniform1f(loc_hw, 0.016)
+        glUniform1f(loc_g, 0.55)
+        glUniform3f(loc_col, 0.70, 1.0, 0.60)
+        glUniform1f(loc_a, 0.70 + beat * 0.15)
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, count)
+
+        # 加算で少し滲ませる最終グロー
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+        glUniform1f(loc_hw, 0.090)
+        glUniform1f(loc_g, 1.5)
+        glUniform3f(loc_col, 0.10, 0.60, 0.25)
+        glUniform1f(loc_a, 0.20 + energy * 0.10)
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, count)
+
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glDepthMask(GL_TRUE)
 
 
 def ctypes_offset(n: int):

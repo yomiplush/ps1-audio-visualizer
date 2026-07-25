@@ -92,6 +92,7 @@ from OpenGL.GL import (
     glGetShaderInfoLog,
     glGetShaderiv,
     glGetUniformLocation,
+    glLineWidth,
     glLinkProgram,
     glRenderbufferStorage,
     glShaderSource,
@@ -103,6 +104,7 @@ from OpenGL.GL import (
     glUniform1i,
     glUniform2f,
     glUniform3f,
+    glUniform4f,
     glUniformMatrix4fv,
     glUseProgram,
     glVertexAttribDivisor,
@@ -323,6 +325,40 @@ void main(){
 }
 """
 
+# Front-layer analog phosphor beam (thick soft ribbon)
+OSC_VERT = """
+#version 330 core
+layout(location=0) in vec3 aData; // x, sample, side  (abs AFTER interpolate)
+uniform float uAmp; uniform float uHalfW; uniform float uYOffset;
+out float vSide; out float vAlong; out float vMag;
+void main(){
+    float y=clamp(aData.y*uAmp+uYOffset,-0.90,0.90);
+    float hw=uHalfW*(1.0+abs(aData.y)*0.35);
+    gl_Position=vec4(aData.x, y+aData.z*hw, 0.0, 1.0);
+    vSide=aData.z; vAlong=aData.x*0.5+0.5; vMag=abs(aData.y);
+}
+"""
+
+OSC_FRAG = """
+#version 330 core
+in float vSide; in float vAlong; in float vMag;
+uniform vec3 uColor; uniform float uAlpha; uniform float uTime; uniform float uGlow;
+out vec4 FragColor;
+void main(){
+    float edge=abs(vSide);
+    float e=edge/max(uGlow,0.15);
+    float beam=exp(-e*e*2.8);
+    float core=exp(-e*e*12.0);
+    float ends=smoothstep(0.0,0.02,vAlong)*smoothstep(1.0,0.98,vAlong);
+    float n=fract(sin(dot(gl_FragCoord.xy+uTime*17.0,vec2(12.9898,78.233)))*43758.5453);
+    beam*=0.92+0.08*n;
+    float a=clamp((beam*0.95+core*0.65)*uAlpha*ends,0.0,1.0);
+    vec3 phos=mix(uColor*0.55, vec3(0.65,1.0,0.50), core);
+    phos+=uColor*beam*0.40;
+    FragColor=vec4(phos, a);
+}
+"""
+
 GRID_VERT = """
 #version 330 core
 layout(location=0) in vec3 aPos;
@@ -366,25 +402,25 @@ out vec4 FragColor;
 """ + _GLSL_COMMON + """
 void main(){
     vec2 p=vUv-0.5; float r=length(p);
-    // outer black, blue only near center
-    vec3 black=vec3(0.004,0.005,0.010);
-    vec3 mid=vec3(0.012,0.018,0.040);
-    vec3 coreBlue=vec3(0.04,0.10,0.22);
-    float coreMask=exp(-r*r*14.0);
-    float midMask=exp(-r*r*5.5);
+    // outer black, clearer blue near center
+    vec3 black=vec3(0.003,0.006,0.016);
+    vec3 mid=vec3(0.010,0.028,0.062);
+    vec3 coreBlue=vec3(0.035,0.14,0.34);
+    float coreMask=exp(-r*r*12.5);
+    float midMask=exp(-r*r*5.0);
     vec3 col=black;
-    col=mix(col,mid,midMask*0.85);
-    col=mix(col,coreBlue,coreMask*(0.55+uEnergy*0.25));
+    col=mix(col,mid,midMask*0.90);
+    col=mix(col,coreBlue,coreMask*(0.62+uEnergy*0.28));
     float yBand=exp(-pow(p.y/(0.055+uEnergy*0.025+uBeat*0.02),2.0));
     float xFall=1.0-smoothstep(0.02,0.42,abs(p.x));
-    vec3 hCol=vec3(0.12,0.32,0.55);
-    float pulse=0.06+uEnergy*0.14+uBeat*0.10;
+    vec3 hCol=vec3(0.10,0.40,0.72);
+    float pulse=0.07+uEnergy*0.15+uBeat*0.10;
     float wave=0.90+0.10*sin(p.x*10.0-uTime*1.4+uBeat*2.0);
     col+=hCol*yBand*xFall*pulse*wave*coreMask;
-    col+=vec3(0.08,0.22,0.40)*coreMask*(0.04+uEnergy*0.10+uBeat*0.06);
-    col+=vec3(0.25,0.06,0.28)*uBeat*0.03*coreMask;
+    col+=vec3(0.06,0.28,0.58)*coreMask*(0.05+uEnergy*0.12+uBeat*0.07);
+    col+=vec3(0.22,0.06,0.32)*uBeat*0.03*coreMask;
     col*=mix(0.15,1.0,midMask);
-    col=boostSat(col,-0.12);
+    col=boostSat(col,-0.04);
     FragColor=vec4(col,1.0);
 }
 """
@@ -1100,6 +1136,14 @@ class VisualizerRenderer:
         self.particles = ParticleSystem(particle_n)
         self._spectrum = np.zeros(band_count, dtype=np.float32)
         self._analysis = AudioAnalysis()
+        self._wave_n = 320
+        self._waveform = np.zeros(self._wave_n, dtype=np.float32)
+        self._waveform_prev = np.zeros(self._wave_n, dtype=np.float32)
+        self._osc_strip = np.zeros((self._wave_n * 2, 3), dtype=np.float32)
+        self._osc_xs = np.linspace(-0.96, 0.96, self._wave_n, dtype=np.float32)
+        self.prog_osc = 0
+        self.osc_vao = 0
+        self.osc_vbo = 0
         # GL handles (filled in init_gl / _alloc_targets)
         self._ready = False
         self._fbo_scene = 0
@@ -1176,6 +1220,17 @@ class VisualizerRenderer:
         self.prog_part = _link(PART_VERT, PART_FRAG)
         self.prog_trail = _link(POST_VERT, TRAIL_FRAG)
         self.prog_post = _link(POST_VERT, POST_FRAG)
+        self.prog_osc = _link(OSC_VERT, OSC_FRAG)
+
+        # Oscilloscope ribbon (front layer)
+        self.osc_vao = glGenVertexArrays(1)
+        self.osc_vbo = glGenBuffers(1)
+        glBindVertexArray(self.osc_vao)
+        glBindBuffer(GL_ARRAY_BUFFER, self.osc_vbo)
+        glBufferData(GL_ARRAY_BUFFER, self._osc_strip.nbytes, self._osc_strip, GL_DYNAMIC_DRAW)
+        glEnableVertexAttribArray(0)
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 12, None)
+        glBindVertexArray(0)
 
         # Bars
         bar = _unit_box()
@@ -1445,6 +1500,15 @@ class VisualizerRenderer:
         self._analysis = analysis
         if analysis.spectrum is not None and analysis.spectrum.size == self.bands:
             self._spectrum = self._spectrum * 0.35 + analysis.spectrum * 0.65
+        wave = getattr(analysis, "waveform", None)
+        if wave is not None and getattr(wave, "size", 0) > 0:
+            w = np.asarray(wave, dtype=np.float32).ravel()
+            if w.size != self._wave_n:
+                x_old = np.linspace(0.0, 1.0, max(1, w.size), dtype=np.float32)
+                x_new = np.linspace(0.0, 1.0, self._wave_n, dtype=np.float32)
+                w = np.interp(x_new, x_old, w).astype(np.float32)
+            self._waveform_prev = self._waveform.copy()
+            self._waveform = self._waveform * 0.55 + w * 0.45
 
     def toggle_rotation(self) -> None:
         self._auto_rotate = not self._auto_rotate
@@ -1811,7 +1875,68 @@ class VisualizerRenderer:
         glBindTexture(GL_TEXTURE_2D, trail_tex)
         glBindVertexArray(self.bg_vao)
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4)
+
+        # Front layer: green oscilloscope
+        self._draw_oscilloscope(energy, beat)
+
         glEnable(GL_DEPTH_TEST)
         glEnable(GL_BLEND)
         glBindVertexArray(0)
         glUseProgram(0)
+
+    def _draw_oscilloscope(self, energy: float, beat: float) -> None:
+        if not self.prog_osc or not self.osc_vao:
+            return
+        amp = float(0.34 + energy * 0.30 + beat * 0.16)
+        y = np.clip(self._waveform * 1.35 + self._waveform_prev * 0.20, -1.0, 1.0)
+        if float(np.max(np.abs(y))) < 0.02:
+            ph = time.perf_counter() * 6.0
+            y = (0.04 * np.sin(self._osc_xs * 18.0 + ph)).astype(np.float32)
+        n = self._wave_n
+        strip = self._osc_strip
+        strip[0::2, 0] = self._osc_xs
+        strip[1::2, 0] = self._osc_xs
+        strip[0::2, 1] = y
+        strip[1::2, 1] = y
+        strip[0::2, 2] = -1.0
+        strip[1::2, 2] = 1.0
+        glBindBuffer(GL_ARRAY_BUFFER, self.osc_vbo)
+        glBufferSubData(GL_ARRAY_BUFFER, 0, strip.nbytes, np.ascontiguousarray(strip))
+        glDisable(GL_DEPTH_TEST)
+        glDepthMask(GL_FALSE)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glUseProgram(self.prog_osc)
+        _u1f(self.prog_osc, "uAmp", amp)
+        _u1f(self.prog_osc, "uYOffset", 0.0)
+        _u1f(self.prog_osc, "uTime", time.perf_counter())
+        glBindVertexArray(self.osc_vao)
+        loc_col = glGetUniformLocation(self.prog_osc, "uColor")
+        count = n * 2
+        _u1f(self.prog_osc, "uHalfW", 0.070 + beat * 0.015)
+        _u1f(self.prog_osc, "uGlow", 1.25)
+        if loc_col >= 0:
+            glUniform3f(loc_col, 0.12, 0.75, 0.30)
+        _u1f(self.prog_osc, "uAlpha", 0.35 + energy * 0.12)
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, count)
+        _u1f(self.prog_osc, "uHalfW", 0.040 + energy * 0.010)
+        _u1f(self.prog_osc, "uGlow", 1.0)
+        if loc_col >= 0:
+            glUniform3f(loc_col, 0.20, 0.98, 0.40)
+        _u1f(self.prog_osc, "uAlpha", 0.55 + energy * 0.12 + beat * 0.08)
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, count)
+        _u1f(self.prog_osc, "uHalfW", 0.016)
+        _u1f(self.prog_osc, "uGlow", 0.55)
+        if loc_col >= 0:
+            glUniform3f(loc_col, 0.70, 1.0, 0.60)
+        _u1f(self.prog_osc, "uAlpha", 0.70 + beat * 0.15)
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, count)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE)
+        _u1f(self.prog_osc, "uHalfW", 0.090)
+        _u1f(self.prog_osc, "uGlow", 1.5)
+        if loc_col >= 0:
+            glUniform3f(loc_col, 0.10, 0.60, 0.25)
+        _u1f(self.prog_osc, "uAlpha", 0.20 + energy * 0.10)
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, count)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glDepthMask(GL_TRUE)

@@ -10,10 +10,10 @@ from __future__ import annotations
 import os
 from typing import Optional
 
-# Default lock: slightly under 30 so motion reads as "old console"
-PS1_FPS_DEFAULT = 18
-PS1_FPS_MIN = 12
-PS1_FPS_MAX = 24  # never allow silky-smooth rates by default
+# Default lock: low for PS1 jag + 排熱抑制（高FPSは熱を押し上げる）
+PS1_FPS_DEFAULT = 15
+PS1_FPS_MIN = 10
+PS1_FPS_MAX = 20  # never allow silky-smooth rates by default
 
 
 def ps1_lock_enabled() -> bool:
@@ -42,17 +42,17 @@ def ps1_target_fps(quality_fps: Optional[float] = None) -> int:
     if not ps1_lock_enabled():
         return max(PS1_FPS_MIN, min(60, q))
 
-    # PS1 lock: quality can only go so high; default sits around 18
+    # PS1 lock: quality can only go so high; default sits around 15
     capped = min(q, PS1_FPS_MAX)
-    # Pull high profiles down a bit (30/36 → 20/24 feel)
-    if capped >= 30:
-        capped = 20
-    elif capped >= 24:
+    # Pull high profiles down (排熱のため上限を低めに)
+    if capped >= 24:
         capped = 18
     elif capped >= 20:
-        capped = 18
+        capped = 16
+    elif capped >= 16:
+        capped = 15
     else:
-        capped = max(PS1_FPS_MIN, min(capped, 16))
+        capped = max(PS1_FPS_MIN, min(capped, 12))
     return int(max(PS1_FPS_MIN, min(PS1_FPS_MAX, capped)))
 
 

@@ -1,40 +1,54 @@
-# SoundOrbit Mobile
+# SoundOrbit Mobile / VR
 
-Mobile-tuned **PS1 CRT visualizer** driven by the **device microphone**.
+Mic-driven **PS1 CRT** visualizer ports (not desktop system-audio loopback).
 
-| Platform | Status |
-|----------|--------|
-| **Android APK** | Phase 1 — build & sideload |
-| **iOS IPA** | Phase 2 — Metal / MoltenVK (planned) |
+| Platform | Status | Output |
+|----------|--------|--------|
+| **Android phone** | Phase 1 | `dist/SoundOrbit-Mobile-debug.apk` |
+| **Meta Quest 2 / 3 / 3S** | Phase 1 | `dist/SoundOrbit-Quest-debug.apk` |
+| **iOS IPA** | Phase 2 planned | — |
 
 ## Limits
 
-- **Not system audio** (Spotify-in-the-phone). Uses **mic** ambient sound.
-- Desktop GTK/GLFW code is not packaged; this is a native **OpenGL ES 3** port of the look.
+- **Not system audio** (Spotify internal). Uses **mic** ambient sound.
+- Desktop GTK/GLFW code is separate.
 
-## Build APK
+---
+
+## Android phone (GLES)
 
 ```bash
 export JAVA_HOME=$HOME/tools/jdk-17
 export ANDROID_HOME=$HOME/Android/Sdk
 ./mobile/android/build-apk.sh
 # → dist/SoundOrbit-Mobile-debug.apk
-```
-
-## Sideload
-
-```bash
 adb install -r dist/SoundOrbit-Mobile-debug.apk
 ```
 
-Or copy the APK to the phone and open it (allow unknown sources).  
-Grant **Microphone** when asked.
+## Meta Quest VR (OpenXR + GLES3)
+
+Full native app under [`quest/`](quest/) with **automatic quality** for Quest 2 / 3 / 3S:
+
+```bash
+./mobile/quest/build-apk.sh
+# → dist/SoundOrbit-Quest-debug.apk
+adb install -r dist/SoundOrbit-Quest-debug.apk
+```
+
+See [`quest/README.md`](quest/README.md) for profiles, architecture, and sideload notes.
+
+| Device | Auto profile |
+|--------|----------------|
+| Quest 2 | ECO (32 bands, scale 0.72) |
+| Quest 3S | HIGH (48 bands, scale 0.88) |
+| Quest 3 | ULTRA (64 bands, scale 1.0) |
 
 ## Graphics plan
 
-- Phase 1: **OpenGL ES 3.0** (ships now)
-- Later: **Vulkan** on Android; **Metal** / **MoltenVK** on iOS for a shared core
+- Phone: **OpenGL ES 3.0**
+- Quest: **OpenXR + OpenGL ES 3** (stereo, LOCAL space ring)
+- Later: Vulkan path; **Metal** / **MoltenVK** on iOS
 
 ## Permissions
 
-- `RECORD_AUDIO` only
+- `RECORD_AUDIO`

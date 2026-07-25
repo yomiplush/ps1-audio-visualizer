@@ -9,6 +9,7 @@ Reacts to **whatever is playing on the PC**.
 | **Linux (any)** | [AppImage](https://github.com/yomiplush/ps1-audio-visualizer/releases/latest) → `SoundOrbit-Linux-x86_64.AppImage` |
 | **Arch / CachyOS** | `./install-pacman.sh` → package **`soundorbit`** (Octopi で削除可) |
 | **Windows 11** | [same Release](https://github.com/yomiplush/ps1-audio-visualizer/releases/latest) → `SoundOrbit-Windows-x64.exe` |
+| **Meta Quest 2/3/3S** | Build: `./mobile/quest/build-apk.sh` → `SoundOrbit-Quest-debug.apk` (OpenXR VR, mic) |
 
 **[Latest Release (Linux + Windows)](https://github.com/yomiplush/ps1-audio-visualizer/releases/latest)**
 
