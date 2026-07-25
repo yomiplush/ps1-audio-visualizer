@@ -64,37 +64,51 @@ def _classify_name(name: str) -> tuple[str, bool]:
 
 def _query_wmi_names() -> list[str]:
     names: list[str] = []
-    # PowerShell CIM (Windows 10/11)
-    ps = (
-        "Get-CimInstance Win32_VideoController | "
-        "Select-Object -ExpandProperty Name"
-    )
-    try:
-        out = subprocess.check_output(
-            ["powershell", "-NoProfile", "-Command", ps],
-            text=True,
-            stderr=subprocess.DEVNULL,
-            timeout=8,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-        for line in out.splitlines():
-            s = line.strip()
-            if s:
-                names.append(s)
-        if names:
-            return names
-    except Exception:
-        pass
+    creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-    # Fallback WMIC (deprecated but still present on many systems)
-    try:
-        out = subprocess.check_output(
-            ["wmic", "path", "win32_VideoController", "get", "name"],
+    def _run(cmd: list[str]) -> str:
+        return subprocess.check_output(
+            cmd,
             text=True,
             stderr=subprocess.DEVNULL,
-            timeout=8,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            timeout=10,
+            creationflags=creation,
         )
+
+    # PowerShell CIM (Windows 10/11)
+    ps_cmds = [
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name",
+        ],
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "Get-WmiObject Win32_VideoController | ForEach-Object { $_.Name }",
+        ],
+    ]
+    for cmd in ps_cmds:
+        try:
+            out = _run(cmd)
+            for line in out.splitlines():
+                s = line.strip()
+                if s:
+                    names.append(s)
+            if names:
+                return names
+        except Exception:
+            continue
+
+    # Fallback WMIC
+    try:
+        out = _run(["wmic", "path", "win32_VideoController", "get", "name"])
         for line in out.splitlines():
             s = line.strip()
             if not s or s.lower() == "name":
@@ -103,6 +117,14 @@ def _query_wmi_names() -> list[str]:
     except Exception:
         pass
     return names
+
+
+def profile_from_gl_renderer(renderer: str, vendor: str = "") -> GpuProfile:
+    """Build profile when WMI failed but OpenGL context exists."""
+    name = f"{vendor} {renderer}".strip()
+    v, igpu = _classify_name(name)
+    adapters = [GpuAdapter(name=renderer or name, vendor=v, is_integrated=igpu)]
+    return build_profile(adapters)
 
 
 def detect_adapters() -> list[GpuAdapter]:

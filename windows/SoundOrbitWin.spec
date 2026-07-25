@@ -19,7 +19,7 @@ hiddenimports = [
     "OpenGL.platform.win32",
     "OpenGL.GL.shaders",
     "glfw",
-    "sounddevice",
+    "soundcard",
     "sound_orbit_win",
     "sound_orbit_win.app",
     "sound_orbit_win.audio",
@@ -38,10 +38,10 @@ except Exception as exc:
     print("warn: collect glfw libs:", exc)
 
 try:
-    binaries += collect_dynamic_libs("sounddevice")
-    datas += collect_data_files("sounddevice")
+    binaries += collect_dynamic_libs("soundcard")
+    datas += collect_data_files("soundcard")
 except Exception as exc:
-    print("warn: collect sounddevice libs:", exc)
+    print("warn: collect soundcard libs:", exc)
 
 # Fallback: walk package dirs for *.dll
 def _add_dlls_from_package(pkg_name: str) -> None:
@@ -58,7 +58,7 @@ def _add_dlls_from_package(pkg_name: str) -> None:
         print(f"warn: scan {pkg_name} dlls:", exc)
 
 _add_dlls_from_package("glfw")
-_add_dlls_from_package("sounddevice")
+_add_dlls_from_package("soundcard")
 
 # Deduplicate by basename+dest
 seen = set()

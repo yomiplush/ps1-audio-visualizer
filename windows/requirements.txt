@@ -2,5 +2,6 @@ numpy>=1.24
 PyOpenGL>=3.1.0
 PyOpenGL-accelerate>=3.1.0; platform_system=="Windows"
 glfw>=2.6.0
-sounddevice>=0.4.6
+soundcard>=0.4.3
+# sounddevice optional; loopback uses soundcard (WasapiSettings.loopback is unreliable)
 pyinstaller>=6.0.0

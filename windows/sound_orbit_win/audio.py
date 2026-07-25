@@ -1,8 +1,11 @@
-"""Windows WASAPI *loopback only* — system playback (what you hear), never microphone."""
+"""Windows system-playback capture (loopback only) + FFT.
+
+Primary: ``soundcard`` (WASAPI loopback — works with Realtek / Intel / BT / HDMI).
+Never opens a microphone. sounddevice mic fallback removed.
+"""
 
 from __future__ import annotations
 
-import re
 import sys
 import threading
 import time
@@ -16,40 +19,6 @@ CHANNELS = 2
 FFT_SIZE = 2048
 BANDS = 96
 CHUNK_FRAMES = 1024
-
-# Name hints for logging / prioritization (not exclusive filters)
-_VENDOR_HINTS = (
-    "realtek",
-    "intel",
-    "nvidia",
-    "amd",
-    "bluetooth",
-    "hands-free",
-    "headset",
-    "airpods",
-    "sony",
-    "bose",
-    "jabra",
-    "logitech",
-    "steelseries",
-    "razer",
-    "hyperx",
-    "corsair",
-    "usb",
-    "hdmi",
-    "displayport",
-    "dp audio",
-    "nvidia high definition",
-    "amd high definition",
-    "high definition audio",
-    "speakers",
-    "headphone",
-    "earphone",
-    "output",
-    "digital audio",
-    "spdif",
-    "optical",
-)
 
 
 @dataclass
@@ -67,138 +36,166 @@ class AudioAnalysis:
     source_name: str = ""
 
 
-@dataclass(frozen=True)
-class OutputCandidate:
-    index: int
-    name: str
-    hostapi_name: str
-    max_out: int
-    default_samplerate: float
-    is_default_out: bool
-    score: int
-    kind: str  # realtek|intel|bluetooth|hdmi|usb|other
-
-
-def _classify_output_name(name: str) -> str:
-    low = name.lower()
-    if "bluetooth" in low or "hands-free ag audio" in low or "a2dp" in low:
+def _classify(name: str) -> str:
+    low = (name or "").lower()
+    if "bluetooth" in low or "hands-free" in low or "a2dp" in low or "bthhf" in low:
         return "bluetooth"
     if "realtek" in low:
         return "realtek"
     if "intel" in low:
         return "intel"
     if "nvidia" in low:
-        return "hdmi" if ("hdmi" in low or "display" in low) else "nvidia"
+        return "nvidia"
     if "amd" in low or "radeon" in low:
-        return "hdmi" if ("hdmi" in low or "display" in low) else "amd"
-    if "hdmi" in low or "displayport" in low or "dp audio" in low:
+        return "amd"
+    if "hdmi" in low or "displayport" in low:
         return "hdmi"
     if "usb" in low:
         return "usb"
     return "other"
 
 
-def _score_output(name: str, is_default: bool, kind: str) -> int:
-    """Higher = try earlier for loopback."""
+def _score_loopback_name(name: str, is_default: bool) -> int:
+    low = (name or "").lower()
     s = 0
-    low = name.lower()
     if is_default:
         s += 1000
-    # Prefer real speaker/headphone endpoints over obscure virtual devices
-    if any(k in low for k in ("speaker", "headphone", "headset", "earphone", "realtek")):
+    if any(k in low for k in ("speaker", "headphone", "headset", "realtek")):
         s += 80
-    if kind == "bluetooth":
-        s += 40  # valid when user listens via BT
-    if kind in ("hdmi", "nvidia", "amd"):
+    if "bluetooth" in low:
+        s += 40
+    if "stereo mix" in low or "what u hear" in low:
         s += 30
-    if kind == "usb":
-        s += 50
-    if kind == "intel":
-        s += 35
-    # Deprioritize likely non-playback or capture-adjacent names
-    if any(k in low for k in ("microphone", "mic ", "array", "webcam", "camera")):
-        s -= 500  # should already be filtered as no outputs
-    if any(k in low for k in ("mapper", "primary sound driver", "dummy", "null")):
-        s -= 50
-    if "stereo mix" in low or "what u hear" in low or "wave out mix" in low:
-        s += 20  # rare legacy mix devices (still output-side)
+    # Deprioritize obscure hands-free AG (often wrong endpoint)
+    if "hands-free" in low and "speaker" not in low:
+        s -= 40
+    if "mapper" in low or "primary sound" in low:
+        s -= 60
     return s
 
 
-def list_loopback_candidates(sd: Any) -> list[OutputCandidate]:
-    """All *output* devices we can open with WASAPI loopback (never pure mics)."""
-    hostapis = sd.query_hostapis()
-    wasapi_indices = {
-        i for i, h in enumerate(hostapis) if "wasapi" in str(h.get("name", "")).lower()
-    }
+@dataclass(frozen=True)
+class LoopbackMic:
+    """A soundcard 'microphone' that is actually a render-device loopback."""
 
+    mic: Any
+    name: str
+    kind: str
+    is_default: bool
+    score: int
+
+
+def list_soundcard_loopbacks() -> list[LoopbackMic]:
+    import soundcard as sc
+
+    default_speaker = None
     try:
-        default_out = sd.default.device[1]
+        default_speaker = sc.default_speaker()
     except Exception:
-        default_out = None
+        pass
+    default_name = getattr(default_speaker, "name", None) if default_speaker else None
 
-    devices = sd.query_devices()
-    cands: list[OutputCandidate] = []
-    for idx, dev in enumerate(devices):
-        max_out = int(dev.get("max_output_channels") or 0)
-        if max_out <= 0:
-            continue  # microphone / input-only — skip entirely
-        # Prefer WASAPI hostapi when present; still list others as last resort
-        hostapi = int(dev.get("hostapi", -1))
-        ha_name = ""
+    out: list[LoopbackMic] = []
+    try:
+        mics = sc.all_microphones(include_loopback=True)
+    except TypeError:
+        # very old soundcard
+        mics = sc.all_microphones()
+
+    for mic in mics:
+        name = str(getattr(mic, "name", "") or "")
+        # Prefer explicit loopback flag when present
+        is_loop = bool(getattr(mic, "isloopback", False))
+        # soundcard names loopbacks often as same as speaker name when include_loopback=True
+        # Non-loopback pure mics: skip if clearly mic-only
+        if not is_loop:
+            low = name.lower()
+            # Without isloopback attribute, include_loopback=True still returns loopbacks;
+            # pure mics usually contain these:
+            if any(
+                k in low
+                for k in (
+                    "microphone",
+                    "mic array",
+                    "webcam",
+                    "camera",
+                    "internal mic",
+                    "external mic",
+                )
+            ) and "loopback" not in low:
+                # Might still be a misnamed loopback; only skip if not matching any speaker
+                try:
+                    speakers = [s.name for s in sc.all_speakers()]
+                    if name not in speakers and not any(name in s or s in name for s in speakers):
+                        continue
+                except Exception:
+                    continue
+
+        is_default = False
+        if default_name:
+            if name == default_name or default_name in name or name in default_name:
+                is_default = True
+        kind = _classify(name)
+        score = _score_loopback_name(name, is_default)
+        if is_loop:
+            score += 100
+        out.append(LoopbackMic(mic=mic, name=name, kind=kind, is_default=is_default, score=score))
+
+    # If nothing marked loopback, try mapping each speaker to a mic via get_microphone(..., include_loopback=True)
+    if not out or all(not getattr(m.mic, "isloopback", False) for m in out):
         try:
-            ha_name = str(hostapis[hostapi].get("name", ""))
-        except Exception:
-            ha_name = str(hostapi)
-        name = str(dev.get("name", f"device-{idx}"))
-        kind = _classify_output_name(name)
-        is_def = default_out is not None and idx == default_out
-        score = _score_output(name, is_def, kind)
-        if hostapi in wasapi_indices:
-            score += 200  # WASAPI first
-        elif "mme" in ha_name.lower():
-            score -= 30
-        elif "directsound" in ha_name.lower() or "dsound" in ha_name.lower():
-            score -= 20
-        cands.append(
-            OutputCandidate(
-                index=idx,
-                name=name,
-                hostapi_name=ha_name,
-                max_out=max_out,
-                default_samplerate=float(dev.get("default_samplerate") or SAMPLE_RATE),
-                is_default_out=is_def,
-                score=score,
-                kind=kind,
-            )
-        )
+            for sp in sc.all_speakers():
+                try:
+                    mic = sc.get_microphone(id=str(sp.id), include_loopback=True)
+                except Exception:
+                    try:
+                        mic = sc.get_microphone(id=str(sp.name), include_loopback=True)
+                    except Exception:
+                        continue
+                name = str(getattr(mic, "name", sp.name) or sp.name)
+                is_default = bool(
+                    default_speaker is not None
+                    and (sp.id == getattr(default_speaker, "id", None) or sp.name == default_name)
+                )
+                kind = _classify(name)
+                score = _score_loopback_name(name, is_default) + 150
+                out.append(
+                    LoopbackMic(
+                        mic=mic, name=name, kind=kind, is_default=is_default, score=score
+                    )
+                )
+        except Exception as exc:
+            print(f"speaker→loopback map failed: {exc}", file=sys.stderr)
 
-    cands.sort(key=lambda c: (-c.score, c.index))
-    return cands
+    # Dedupe by name keeping highest score
+    best: dict[str, LoopbackMic] = {}
+    for m in out:
+        key = m.name.strip().lower()
+        if key not in best or m.score > best[key].score:
+            best[key] = m
+    ranked = sorted(best.values(), key=lambda m: (-m.score, m.name))
+    return ranked
 
 
-def _log_candidates(cands: list[OutputCandidate]) -> None:
-    print("==> Playback devices (loopback candidates, mic excluded):", file=sys.stderr)
-    for c in cands[:24]:
-        mark = "*" if c.is_default_out else " "
+def _log_loopbacks(cands: list[LoopbackMic]) -> None:
+    print("==> Playback loopback candidates (mic excluded):", file=sys.stderr)
+    for m in cands[:30]:
+        mark = "*" if m.is_default else " "
+        loop = "loop" if getattr(m.mic, "isloopback", False) else "map"
         print(
-            f"  {mark} [{c.index}] {c.kind:10} score={c.score:4}  "
-            f"{c.name}  ({c.hostapi_name}, out={c.max_out}ch)",
+            f"  {mark} {m.kind:10} score={m.score:4} [{loop}] {m.name}",
             file=sys.stderr,
         )
-    if len(cands) > 24:
-        print(f"  … +{len(cands) - 24} more", file=sys.stderr)
 
 
 class SystemAudioCapture:
     """
-    Capture *what you hear* via WASAPI loopback on output devices only.
+    Capture system playback via WASAPI loopback (soundcard).
 
-    - Enumerates Realtek / Intel HD Audio / Bluetooth / HDMI / USB / etc.
-    - Prefers Windows default playback device
-    - Tries other outputs if default loopback fails
-    - NEVER opens microphone / input-only devices
-    - Re-binds if the default output changes (e.g. plug in BT headphones)
+    - Detects Realtek / Intel HD / Bluetooth / HDMI / USB outputs
+    - Prefers Windows default speaker loopback
+    - Never opens a real microphone
+    - Rebinds when default speaker changes
     """
 
     def __init__(
@@ -214,9 +211,6 @@ class SystemAudioCapture:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
-        self._stream = None
-        self._device_index: Optional[int] = None
-        self._device_name: str = ""
 
         self._ring = np.zeros(fft_size * 4, dtype=np.float32)
         self._ring_pos = 0
@@ -233,6 +227,7 @@ class SystemAudioCapture:
         self._prev_bass = 0.0
         self._band_edges = self._make_band_edges(bands, fft_size, sample_rate)
         self._window = np.hanning(fft_size).astype(np.float32)
+        self._active_name: str = ""
 
     @staticmethod
     def _make_band_edges(bands: int, fft_size: int, sample_rate: int) -> np.ndarray:
@@ -250,28 +245,14 @@ class SystemAudioCapture:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="soundorbit-wasapi", daemon=True)
+        self._thread = threading.Thread(target=self._run, name="soundorbit-loopback", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
-        self._close_stream()
         if self._thread is not None:
-            self._thread.join(timeout=2.5)
+            self._thread.join(timeout=3.0)
             self._thread = None
-
-    def _close_stream(self) -> None:
-        stream = self._stream
-        self._stream = None
-        if stream is not None:
-            try:
-                stream.stop()
-            except Exception:
-                pass
-            try:
-                stream.close()
-            except Exception:
-                pass
 
     def snapshot(self) -> AudioAnalysis:
         with self._lock:
@@ -289,169 +270,6 @@ class SystemAudioCapture:
                 error=a.error,
                 source_name=a.source_name,
             )
-
-    def _open_loopback(self, sd: Any, cand: OutputCandidate) -> Any:
-        """Open WASAPI loopback InputStream on an *output* device. Raises on failure."""
-        try:
-            wasapi = sd.WasapiSettings(loopback=True)
-        except Exception as exc:
-            raise RuntimeError(f"WasapiSettings(loopback=True) unavailable: {exc}") from exc
-
-        # Prefer device default rate when plausible, else 48k
-        rates = []
-        for r in (int(cand.default_samplerate), self.sample_rate, 48000, 44100):
-            if r and r not in rates:
-                rates.append(int(r))
-
-        chans = min(CHANNELS, max(1, cand.max_out))
-        last_err: Optional[Exception] = None
-        for rate in rates:
-            try:
-                stream = sd.InputStream(
-                    samplerate=rate,
-                    channels=chans,
-                    dtype="float32",
-                    blocksize=CHUNK_FRAMES,
-                    device=cand.index,
-                    extra_settings=wasapi,
-                    callback=self._callback,
-                )
-                self.sample_rate = rate
-                # rebuild window/edges if rate changed
-                self._band_edges = self._make_band_edges(self.bands, self.fft_size, rate)
-                self._window = np.hanning(self.fft_size).astype(np.float32)
-                return stream
-            except Exception as exc:
-                last_err = exc
-                continue
-        raise RuntimeError(str(last_err) if last_err else "loopback open failed")
-
-    def _bind_best_loopback(self, sd: Any) -> tuple[Any, OutputCandidate]:
-        cands = list_loopback_candidates(sd)
-        if not cands:
-            raise RuntimeError(
-                "No playback (output) devices found for WASAPI loopback. "
-                "Microphone-only devices are intentionally ignored."
-            )
-        _log_candidates(cands)
-        errors: list[str] = []
-        for cand in cands:
-            try:
-                stream = self._open_loopback(sd, cand)
-                print(
-                    f"==> Loopback OK: [{cand.index}] {cand.kind} — {cand.name} "
-                    f"@ {self.sample_rate} Hz ({cand.hostapi_name})",
-                    file=sys.stderr,
-                )
-                return stream, cand
-            except Exception as exc:
-                msg = f"[{cand.index}] {cand.name}: {exc}"
-                errors.append(msg)
-                print(f"  loopback fail {msg}", file=sys.stderr)
-        raise RuntimeError(
-            "Could not open WASAPI loopback on any playback device.\n" + "\n".join(errors[:12])
-        )
-
-    def _current_default_out_index(self, sd: Any) -> Optional[int]:
-        try:
-            d = sd.default.device
-            if isinstance(d, (list, tuple)) and len(d) >= 2:
-                return int(d[1])
-            return int(d) if d is not None else None
-        except Exception:
-            return None
-
-    def _run(self) -> None:
-        try:
-            import sounddevice as sd
-        except Exception as exc:
-            with self._lock:
-                self._analysis.error = f"sounddevice import failed: {exc}"
-            return
-
-        try:
-            stream, cand = self._bind_best_loopback(sd)
-        except Exception as exc:
-            with self._lock:
-                self._analysis.error = (
-                    f"Playback loopback failed (mic is NOT used): {exc}"
-                )
-                self._analysis.ready = False
-            return
-
-        self._stream = stream
-        self._device_index = cand.index
-        self._device_name = cand.name
-        with self._lock:
-            self._analysis.source_name = f"loopback:{cand.kind}:{cand.name}"
-            self._analysis.error = None
-
-        try:
-            self._stream.start()
-        except Exception as exc:
-            with self._lock:
-                self._analysis.error = f"stream.start failed: {exc}"
-            self._close_stream()
-            return
-
-        # Watch for default-device changes (BT connect, HDMI plug, etc.)
-        check_every = 2.0
-        last_check = time.monotonic()
-        while not self._stop.is_set():
-            time.sleep(0.05)
-            self._analyze()
-            now = time.monotonic()
-            if now - last_check < check_every:
-                continue
-            last_check = now
-            try:
-                new_default = self._current_default_out_index(sd)
-                if (
-                    new_default is not None
-                    and self._device_index is not None
-                    and new_default != self._device_index
-                ):
-                    # Default output switched — rebind to new device loopback
-                    print(
-                        f"==> Default output changed {self._device_index} → {new_default}, rebinding…",
-                        file=sys.stderr,
-                    )
-                    self._close_stream()
-                    stream, cand = self._bind_best_loopback(sd)
-                    self._stream = stream
-                    self._device_index = cand.index
-                    self._device_name = cand.name
-                    with self._lock:
-                        self._analysis.source_name = f"loopback:{cand.kind}:{cand.name}"
-                        self._analysis.error = None
-                    self._stream.start()
-            except Exception as exc:
-                with self._lock:
-                    self._analysis.error = f"rebind failed: {exc}"
-                # keep trying analyze; next loop may recover
-                try:
-                    stream, cand = self._bind_best_loopback(sd)
-                    self._stream = stream
-                    self._device_index = cand.index
-                    with self._lock:
-                        self._analysis.source_name = f"loopback:{cand.kind}:{cand.name}"
-                        self._analysis.error = None
-                    self._stream.start()
-                except Exception as exc2:
-                    with self._lock:
-                        self._analysis.error = f"No loopback device: {exc2}"
-
-        self._close_stream()
-
-    def _callback(self, indata, frames, time_info, status) -> None:  # noqa: ANN001
-        if status:
-            pass
-        data = np.asarray(indata, dtype=np.float32)
-        if data.ndim == 2:
-            mono = data.mean(axis=1)
-        else:
-            mono = data.reshape(-1)
-        self._push_samples(mono)
 
     def _push_samples(self, mono: np.ndarray) -> None:
         n = mono.shape[0]
@@ -550,3 +368,107 @@ class SystemAudioCapture:
             self._analysis.peak = peak
             self._analysis.beat = self._beat_env
             self._analysis.ready = True
+
+    def _record_loop(self, mic: Any, name: str, kind: str) -> None:
+        """Blocking record until stop or error."""
+        rates = [self.sample_rate, 48000, 44100, 96000]
+        last_err: Optional[Exception] = None
+        for rate in rates:
+            if self._stop.is_set():
+                return
+            try:
+                # channels: try stereo then mono
+                for ch in (2, 1):
+                    if self._stop.is_set():
+                        return
+                    try:
+                        with mic.recorder(samplerate=rate, channels=ch, blocksize=CHUNK_FRAMES) as rec:
+                            self.sample_rate = rate
+                            self._band_edges = self._make_band_edges(self.bands, self.fft_size, rate)
+                            self._window = np.hanning(self.fft_size).astype(np.float32)
+                            self._active_name = name
+                            with self._lock:
+                                self._analysis.source_name = f"loopback:{kind}:{name}"
+                                self._analysis.error = None
+                            print(
+                                f"==> Loopback OK: {kind} — {name} @ {rate} Hz ch={ch}",
+                                file=sys.stderr,
+                            )
+                            while not self._stop.is_set():
+                                data = rec.record(numframes=CHUNK_FRAMES)
+                                arr = np.asarray(data, dtype=np.float32)
+                                if arr.ndim == 2:
+                                    mono = arr.mean(axis=1)
+                                else:
+                                    mono = arr.reshape(-1)
+                                self._push_samples(mono)
+                                self._analyze()
+                            return
+                    except Exception as exc:
+                        last_err = exc
+                        continue
+            except Exception as exc:
+                last_err = exc
+                continue
+        raise RuntimeError(str(last_err) if last_err else "recorder open failed")
+
+    def _run(self) -> None:
+        try:
+            import soundcard as sc  # noqa: F401
+        except Exception as exc:
+            with self._lock:
+                self._analysis.error = (
+                    f"soundcard import failed: {exc}. "
+                    "Install: pip install soundcard"
+                )
+            return
+
+        while not self._stop.is_set():
+            try:
+                cands = list_soundcard_loopbacks()
+            except Exception as exc:
+                with self._lock:
+                    self._analysis.error = f"device enum failed: {exc}"
+                time.sleep(1.0)
+                continue
+
+            if not cands:
+                with self._lock:
+                    self._analysis.error = (
+                        "No playback loopback found (mic ignored). "
+                        "Check Speakers/Headphones in Windows sound settings."
+                    )
+                time.sleep(1.5)
+                continue
+
+            _log_loopbacks(cands)
+            errors: list[str] = []
+            opened = False
+            for cand in cands:
+                if self._stop.is_set():
+                    return
+                try:
+                    self._record_loop(cand.mic, cand.name, cand.kind)
+                    opened = True
+                    break  # stopped cleanly
+                except Exception as exc:
+                    errors.append(f"{cand.name}: {exc}")
+                    print(f"  loopback fail [{cand.kind}] {cand.name}: {exc}", file=sys.stderr)
+                    continue
+
+            if self._stop.is_set():
+                return
+
+            if not opened:
+                with self._lock:
+                    self._analysis.error = (
+                        "WASAPI loopback failed on all playback devices "
+                        "(microphone is NOT used).\n" + "\n".join(errors[:8])
+                    )
+                    self._analysis.ready = False
+                time.sleep(2.0)
+                # retry enum (device may appear later)
+                continue
+
+            # If _record_loop returned without stop, default device may have changed — re-enum
+            time.sleep(0.3)

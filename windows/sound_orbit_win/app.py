@@ -42,6 +42,7 @@ from sound_orbit_win.gpu import (  # noqa: E402
     apply_windows_gpu_env,
     build_profile,
     describe_profile,
+    profile_from_gl_renderer,
 )
 
 _GPU_PROFILE = build_profile()
@@ -140,6 +141,11 @@ def run() -> int:
     print("Vendor:", gl_vendor, file=sys.stderr)
     print("Renderer:", gl_renderer, file=sys.stderr)
 
+    # If WMI failed (UNKNOWN), recover profile from the live GL device
+    if profile.primary == "UNKNOWN" or not profile.adapters or profile.detail == "unknown":
+        profile = profile_from_gl_renderer(gl_renderer, gl_vendor)
+        print("→ GPU profile recovered from OpenGL:", describe_profile(profile), file=sys.stderr)
+
     if not _match_vendor(gl_renderer, gl_vendor, profile.primary):
         print(
             f"warning: WMI primary GPU is {profile.primary}, but active GL device is:\n"
@@ -151,10 +157,7 @@ def run() -> int:
         # If we wanted NVIDIA/AMD but got Intel, lighten load to match actual device
         if "intel" in gl_renderer.lower() and profile.primary in ("NVIDIA", "AMD"):
             print("→ applying Intel ECO quality for actual GL device", file=sys.stderr)
-            profile.internal_w, profile.internal_h = 200, 150
-            profile.particle_count = 220
-            profile.particle_emit_scale = 0.32
-            profile.trail_mix = 0.22
+            profile = profile_from_gl_renderer(gl_renderer, gl_vendor)
 
     audio = SystemAudioCapture()
     renderer = VisualizerRenderer(profile=profile)
