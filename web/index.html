@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="description" content="SoundOrbit WebGL demo — PS1 CRT visualizer (mic-driven)" />
+  <title>SoundOrbit — Web Demo</title>
+  <link rel="stylesheet" href="css/demo.css" />
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+</head>
+<body>
+  <canvas id="c"></canvas>
+  <div id="ui">
+    <div class="panel">
+      <h1>SoundOrbit</h1>
+      <p class="sub">WebGL2 · PS1 CRT · mic demo</p>
+      <p class="note">
+        ブラウザでは他アプリの再生音は取れません。<br />
+        <strong>マイク</strong>の周囲音に反応します（HTTPS 必須）。
+      </p>
+      <button id="start" type="button">Start Demo</button>
+      <p id="status" class="status">Ready</p>
+      <p class="links">
+        <a href="https://github.com/yomiplush/ps1-audio-visualizer" target="_blank" rel="noopener">GitHub</a>
+        ·
+        <a href="https://github.com/yomiplush/ps1-audio-visualizer/releases/latest" target="_blank" rel="noopener">Desktop / Mobile releases</a>
+      </p>
+    </div>
+  </div>
+  <div id="hud" hidden></div>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>

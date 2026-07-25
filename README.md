@@ -189,6 +189,19 @@ adb install -r dist/SoundOrbit-Mobile-debug.apk
 
 iOS IPA / Metal+MoltenVK: Phase 2 (`mobile/ios/`).
 
+
+---
+
+## WebGL Demo (Cloudflare Pages)
+
+Static WebGL2 mic demo — no build step. See [`web/README.md`](web/README.md).
+
+```bash
+cd web && python3 -m http.server 8080
+```
+
+Cloudflare Pages: **output directory = `web`**, empty build command.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
