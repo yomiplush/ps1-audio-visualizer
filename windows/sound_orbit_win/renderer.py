@@ -284,15 +284,20 @@ void main(){
 
 LABEL_FRAG = """
 #version 330 core
+// Texture is premultiplied RGBA (rgb already * a). Blend with ONE, ONE_MINUS_SRC_ALPHA.
 in vec2 vUv;
 uniform sampler2D uTex;
 uniform float uAlpha; uniform float uBeat; uniform float uEnergy;
 out vec4 FragColor;
 void main(){
     vec4 t=texture(uTex,vUv);
-    if(t.a<0.04) discard;
-    float glow=0.85+uEnergy*0.2+uBeat*0.25;
-    FragColor=vec4(t.rgb*glow,t.a*uAlpha);
+    // Soft vertical fade so the band mesh edges don't show as a hard quad
+    float vFade=smoothstep(0.0,0.12,vUv.y)*smoothstep(1.0,0.88,vUv.y);
+    float a=t.a*uAlpha*vFade;
+    if(a<0.02) discard;
+    float glow=0.90+uEnergy*0.18+uBeat*0.22;
+    // Premultiplied output
+    FragColor=vec4(t.rgb*glow*uAlpha*vFade, a);
 }
 """
 
@@ -732,6 +737,18 @@ def _draw_glyph(rgba: np.ndarray, ch: str, ox: int, oy: int, scale: int, color: 
     return 5 * scale + scale  # advance
 
 
+def _premultiply_rgba(rgba: np.ndarray) -> np.ndarray:
+    """
+    Convert straight RGBA → premultiplied RGBA (uint8).
+    Prevents black fringes when LINEAR-filtering transparent text on Windows GL.
+    """
+    out = np.ascontiguousarray(rgba, dtype=np.uint8).copy()
+    a = out[:, :, 3:4].astype(np.float32) * (1.0 / 255.0)
+    rgb = out[:, :, :3].astype(np.float32)
+    out[:, :, :3] = np.clip(rgb * a + 0.5, 0, 255).astype(np.uint8)
+    return out
+
+
 def _render_text_rgba(
     text: str,
     width: int,
@@ -741,28 +758,26 @@ def _render_text_rgba(
     rgb: tuple[int, int, int] = (120, 255, 140),
     repeats: int = 1,
 ) -> np.ndarray:
-    """CPU bitmap-font texture (no cairo). Bright green neon — must be visible."""
+    """
+    CPU bitmap-font texture (no cairo). Fully transparent background —
+    only glyphs have alpha (straight, then premultiplied by caller).
+    """
     phrase = text if repeats <= 1 else (("  " + text + "  · ") * repeats)
+    # Fully transparent — NO solid band (that broke transparency on Windows)
     rgba = np.zeros((height, width, 4), dtype=np.uint8)
-    # Strong base strip so the orbiting band is never invisible
-    y0, y1 = height // 6, height - height // 6
-    rgba[y0:y1, :, 0] = 20
-    rgba[y0:y1, :, 1] = 70
-    rgba[y0:y1, :, 2] = 30
-    rgba[y0:y1, :, 3] = 160
 
     glyph_w = 5 * scale + scale
-    total_w = max(1, len(phrase) * glyph_w)
-    # Tile phrase across full width so the cylinder always shows text
     ox = 4
     oy = max(1, (height - 7 * scale) // 2)
+    # Straight alpha colors (premultiply later)
     color = (rgb[0], rgb[1], rgb[2], 255)
-    glow = (min(255, rgb[0] + 40), 255, min(255, rgb[2] + 40), 180)
+    glow = (min(255, rgb[0] // 2 + 20), min(255, rgb[1]), min(255, rgb[2] // 2 + 20), 90)
 
     x = ox
     guard = 0
     while x < width - glyph_w and guard < 4000:
         for ch in phrase:
+            # Soft glow first (lower alpha), then solid glyph
             _draw_glyph(rgba, ch, x + 1, oy + 1, scale, glow)
             adv = _draw_glyph(rgba, ch, x, oy, scale, color)
             x += adv
@@ -771,10 +786,12 @@ def _render_text_rgba(
                 break
         if repeats <= 1:
             break
+    # OpenGL bottom-left origin
     return np.ascontiguousarray(np.flipud(rgba))
 
 
 def _make_label_texture(text: str, width: int, height: int, repeats: int = 2) -> tuple[np.ndarray, int, int]:
+    """Build orbiting-label texture → premultiplied RGBA."""
     # Prefer cairo if present (dev machines), else bitmap font
     try:
         import cairo  # type: ignore
@@ -808,13 +825,15 @@ def _make_label_texture(text: str, width: int, height: int, repeats: int = 2) ->
         img = np.ndarray(shape=(height, width, 4), dtype=np.uint8, buffer=buf).copy()
         b, g, r, a = img[:, :, 0], img[:, :, 1], img[:, :, 2], img[:, :, 3]
         rgba = np.ascontiguousarray(np.flipud(np.stack([r, g, b, a], axis=-1)))
-        return rgba, width, height
+        return _premultiply_rgba(rgba), width, height
     except Exception:
         sc = max(2, height // 28)
-        return _render_text_rgba(text, width, height, scale=sc, repeats=repeats), width, height
+        straight = _render_text_rgba(text, width, height, scale=sc, repeats=repeats)
+        return _premultiply_rgba(straight), width, height
 
 
 def _param_text_rgba(lines: list[str], width: int = 320, height: int = 120) -> np.ndarray:
+    """Param billboard texture → premultiplied RGBA, transparent background."""
     try:
         import cairo  # type: ignore
 
@@ -842,24 +861,49 @@ def _param_text_rgba(lines: list[str], width: int = 320, height: int = 120) -> n
         buf = surface.get_data()
         img = np.ndarray(shape=(height, width, 4), dtype=np.uint8, buffer=buf).copy()
         b, g, r, a = img[:, :, 0], img[:, :, 1], img[:, :, 2], img[:, :, 3]
-        return np.ascontiguousarray(np.flipud(np.stack([r, g, b, a], axis=-1)))
+        rgba = np.ascontiguousarray(np.flipud(np.stack([r, g, b, a], axis=-1)))
+        return _premultiply_rgba(rgba)
     except Exception:
-        # two-line bitmap
         rgba = np.zeros((height, width, 4), dtype=np.uint8)
         sc = max(2, height // 40)
         for i, line in enumerate(lines[:2]):
             y = 8 + i * (height // 2)
             _render_into(rgba, line.upper(), 8, y, sc)
-        return np.ascontiguousarray(np.flipud(rgba))
+        return _premultiply_rgba(np.ascontiguousarray(np.flipud(rgba)))
 
 
 def _render_into(rgba: np.ndarray, text: str, ox: int, oy: int, scale: int) -> None:
     x = ox
-    color = (115, 255, 140, 230)
-    glow = (40, 120, 50, 80)
+    color = (115, 255, 140, 255)
+    glow = (40, 120, 50, 100)
     for ch in text:
         _draw_glyph(rgba, ch, x + 1, oy + 1, scale, glow)
         x += _draw_glyph(rgba, ch, x, oy, scale, color)
+
+
+def _upload_rgba_texture(
+    tex: int,
+    rgba: np.ndarray,
+    *,
+    nearest: bool = False,
+    wrap_s=None,
+) -> None:
+    """Upload premultiplied RGBA with correct unpack alignment."""
+    if wrap_s is None:
+        wrap_s = GL_CLAMP_TO_EDGE
+    h, w = rgba.shape[:2]
+    data = np.ascontiguousarray(rgba, dtype=np.uint8)
+    glBindTexture(GL_TEXTURE_2D, tex)
+    try:
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+    except Exception:
+        pass
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data)
+    filt = GL_NEAREST if nearest else GL_LINEAR
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, filt)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, filt)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrap_s)
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
 
 
 PARAM_SPECS: list[tuple[str, str]] = [
@@ -1125,12 +1169,8 @@ class VisualizerRenderer:
         self.label_vertex_count = label_mesh.shape[0] // 5
         rgba, tw, th = _make_label_texture("AUDIO VISUALIZER", 2048, 160, repeats=2)
         self._label_tex = int(glGenTextures(1))
-        glBindTexture(GL_TEXTURE_2D, self._label_tex)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw, th, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        # LINEAR + premultiplied avoids black fringes; REPEAT for cylinder UV
+        _upload_rgba_texture(self._label_tex, rgba, nearest=False, wrap_s=GL_REPEAT)
 
         outer_mesh = _label_ring_band(160, self.outer_radius, 0.20)
         self.outer_vao = glGenVertexArrays(1)
@@ -1146,12 +1186,7 @@ class VisualizerRenderer:
         slogan = "Visualized Audio World for better future"
         rgba_o, tw_o, th_o = _make_label_texture(slogan, 2560, 140, repeats=2)
         self._outer_tex = int(glGenTextures(1))
-        glBindTexture(GL_TEXTURE_2D, self._outer_tex)
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tw_o, th_o, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba_o)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+        _upload_rgba_texture(self._outer_tex, rgba_o, nearest=False, wrap_s=GL_REPEAT)
 
         # Param billboards
         pq = _unit_billboard_quad(1.15, 0.48)
@@ -1169,15 +1204,8 @@ class VisualizerRenderer:
         self._param_last = []
         for _key, label in PARAM_SPECS:
             tex = int(glGenTextures(1))
-            glBindTexture(GL_TEXTURE_2D, tex)
             rgba0 = _param_text_rgba([label, "0.00"], self._param_tw, self._param_th)
-            glTexImage2D(
-                GL_TEXTURE_2D, 0, GL_RGBA, self._param_tw, self._param_th, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba0
-            )
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE)
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)
+            _upload_rgba_texture(tex, rgba0, nearest=False, wrap_s=GL_CLAMP_TO_EDGE)
             self._param_texs.append(tex)
             self._param_last.append(f"{label}|0.00")
 
@@ -1314,8 +1342,20 @@ class VisualizerRenderer:
         self._param_last[index] = key
         rgba = _param_text_rgba([label, txt], self._param_tw, self._param_th)
         glBindTexture(GL_TEXTURE_2D, self._param_texs[index])
+        try:
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 1)
+        except Exception:
+            pass
         glTexSubImage2D(
-            GL_TEXTURE_2D, 0, 0, 0, self._param_tw, self._param_th, GL_RGBA, GL_UNSIGNED_BYTE, rgba
+            GL_TEXTURE_2D,
+            0,
+            0,
+            0,
+            self._param_tw,
+            self._param_th,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            np.ascontiguousarray(rgba, dtype=np.uint8),
         )
 
     def _update_params(self, a: AudioAnalysis) -> None:
@@ -1490,14 +1530,15 @@ class VisualizerRenderer:
             glBindVertexArray(vao)
             glDrawArrays(self.frame_modes[idx], 0, self.frame_counts[idx])
 
-        # Orbiting labels (textured bands)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        # Orbiting labels — premultiplied alpha (transparent bg, no black boxes)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
         glUseProgram(self.prog_label)
         label_y = 1.55 + a.bass * 0.22 + beat * 0.10
         label_model = mul(translation(0.0, label_y, 0.0), rotation_y(self._label_angle))
         _u_mat4(self.prog_label, "uMVP", mul(vp, label_model))
         _u1f(self.prog_label, "uYOffset", 0.0)
-        _u1f(self.prog_label, "uAlpha", float(0.98 + beat * 0.02))
+        _u1f(self.prog_label, "uAlpha", float(0.95 + beat * 0.04))
         _u1f(self.prog_label, "uBeat", beat)
         _u1f(self.prog_label, "uEnergy", energy)
         glActiveTexture(GL_TEXTURE0)
@@ -1507,12 +1548,12 @@ class VisualizerRenderer:
 
         outer_model = mul(translation(0.0, self.outer_y + a.bass * 0.10, 0.0), rotation_y(-self._frame_angle))
         _u_mat4(self.prog_label, "uMVP", mul(vp, outer_model))
-        _u1f(self.prog_label, "uAlpha", float(0.92 + beat * 0.06))
+        _u1f(self.prog_label, "uAlpha", float(0.90 + beat * 0.06))
         glBindTexture(GL_TEXTURE_2D, self._outer_tex)
         glBindVertexArray(self.outer_vao)
         glDrawArrays(GL_TRIANGLE_STRIP, 0, self.outer_vertex_count)
 
-        # Param billboards
+        # Param billboards (same premultiplied blend)
         self._param_timer += dt
         if self._param_timer >= self._param_interval:
             self._param_timer = 0.0
@@ -1523,7 +1564,7 @@ class VisualizerRenderer:
             _u1f(self.prog_label, "uYOffset", 0.0)
             _u1f(self.prog_label, "uBeat", beat)
             _u1f(self.prog_label, "uEnergy", energy)
-            _u1f(self.prog_label, "uAlpha", float(0.95 + beat * 0.05))
+            _u1f(self.prog_label, "uAlpha", float(0.92 + beat * 0.05))
             glBindVertexArray(self.param_vao)
             py = self.param_y + a.bass * 0.18 + a.mid * 0.10 + beat * 0.06
             for i in range(n_params):
@@ -1537,6 +1578,8 @@ class VisualizerRenderer:
                 glActiveTexture(GL_TEXTURE0)
                 glBindTexture(GL_TEXTURE_2D, self._param_texs[i])
                 glDrawArrays(GL_TRIANGLES, 0, self.param_vertex_count)
+        # Restore standard blend for particles etc.
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
 
         glEnable(GL_CULL_FACE)
         glDepthMask(GL_TRUE)
