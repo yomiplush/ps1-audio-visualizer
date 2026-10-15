@@ -7,7 +7,7 @@ Reacts to **whatever is playing on the PC**.
 | Platform | Download |
 |----------|----------|
 | **Linux (any)** | [AppImage](https://github.com/yomiplush/ps1-audio-visualizer/releases/latest) → `SoundOrbit-Linux-x86_64.AppImage` |
-| **Arch / CachyOS** | `./install-pacman.sh` → package **`soundorbit`** (Octopi で削除可) |
+| **Arch / CachyOS** | `./install-pacman.sh` → package **`soundorbit`** (removable via Octopi) |
 | **Windows 11** | [same Release](https://github.com/yomiplush/ps1-audio-visualizer/releases/latest) → `SoundOrbit-Windows-x64.exe` |
 | **Meta Quest 2/3/3S** | Build: `./mobile/quest/build-apk.sh` → `SoundOrbit-Quest-debug.apk` (OpenXR VR, mic) |
 
@@ -17,28 +17,28 @@ Reacts to **whatever is playing on the PC**.
 
 ## Linux — Arch / CachyOS (Octopi)
 
-**Octopi で検出・削除するには** ユーザーローカル (`~/.local`) ではなく **pacman パッケージ**として入れてください。
+**To have it detected and removable via Octopi**, install it as a **pacman package**, not as a user-local install (`~/.local`).
 
 ```bash
 git clone https://github.com/yomiplush/ps1-audio-visualizer.git
 cd ps1-audio-visualizer
 ./install-pacman.sh
-# または:
+# or:
 #   ./packaging/arch/build.sh
 #   sudo pacman -U dist/soundorbit-*.pkg.tar.zst
 ```
 
-| 操作 | 方法 |
-|------|------|
-| **起動** | `sound-orbit` またはアプリメニュー「サウンドオービット」 |
-| **Octopi 削除** | 検索 `soundorbit` → 削除 |
-| **CLI 削除** | `sudo pacman -R soundorbit` |
-| **確認** | `pacman -Q soundorbit` |
+| Action | How |
+|--------|-----|
+| **Launch** | `sound-orbit`, or the app menu entry "Sound Orbit" |
+| **Octopi removal** | Search `soundorbit` → remove |
+| **CLI removal** | `sudo pacman -R soundorbit` |
+| **Verify** | `pacman -Q soundorbit` |
 
-パッケージ名: **`soundorbit`**（システム全体 `/usr` にインストール）。
+Package name: **`soundorbit`** (installed system-wide in `/usr`).
 
-> AppImage や `./install.sh` のユーザーインストールは Octopi に出ません。
-> pacman 版に切り替えると `install-pacman.sh` が `~/.local` の起動スクリプトを掃除します。
+> AppImages and `./install.sh` user installs do not show up in Octopi.
+> When you switch to the pacman version, `install-pacman.sh` cleans up the `~/.local` launch scripts.
 
 ---
 
@@ -58,7 +58,7 @@ chmod +x SoundOrbit-Linux-x86_64.AppImage
 | **Packages** | Installs only *missing* deps (CachyOS-safe; no pipewire downgrade) |
 | **venv** | `~/.local/share/sound-orbit/venv` |
 | **GL autofix** | Multi-mode probe + re-launch (esp. NVIDIA Wayland) |
-| **App menu** | **サウンドオービット** + `~/.local/bin/sound-orbit` |
+| **App menu** | **Sound Orbit** + `~/.local/bin/sound-orbit` |
 
 Optional:
 
